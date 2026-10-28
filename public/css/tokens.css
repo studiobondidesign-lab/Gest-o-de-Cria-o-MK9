@@ -1,0 +1,76 @@
+/*
+  Design system MK9 (fonte: DESIGN.md enviado pela equipe).
+  Para ajustar a marca, troque os valores abaixo: o resto do app só usa estas variáveis.
+*/
+:root {
+  /* Cores base */
+  --color-onyx-canvas: #171721;
+  --color-graphite-card: #1e1e2a;
+  --color-obsidian-button: #272735;
+  --color-slate-border: #70707d;
+  --color-mist-border: #e2e3ed;
+  --color-ash-text: #c3c3cc;
+  --color-ivory-text: #ededf3;
+  --color-cobalt: #5266eb;
+  --color-pure-white: #ffffff;
+
+  /* Papéis semânticos usados pelo app */
+  --bg: var(--color-onyx-canvas);
+  --surface-1: var(--color-graphite-card);
+  --surface-2: var(--color-obsidian-button);
+  --surface-3: #31313f;
+  --hairline: rgba(226, 227, 237, 0.08);
+  --hairline-strong: rgba(226, 227, 237, 0.16);
+  --text: var(--color-ivory-text);
+  --text-muted: var(--color-ash-text);
+  --text-faint: #8f8f9c;
+  --accent: var(--color-cobalt);
+  --accent-hover: #6375f0;
+  --accent-soft: rgba(82, 102, 235, 0.16);
+  --on-accent: var(--color-pure-white);
+
+  /* Sinalização (tons dessaturados para não competir com o cobalto) */
+  --danger: #d98a8a;
+  --warning: #c9a55c;
+  --success: #5fae8f;
+  --prio-urgent: #e07a7a;
+  --prio-high: #c9a55c;
+  --prio-normal: #7d8ce0;
+  --prio-low: #8f8f9c;
+
+  /* Tipografia */
+  --font-arcadia: 'arcadia', 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-arcadiadisplay: 'arcadiaDisplay', 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --text-caption: 12px;
+  --text-body-sm: 14px;
+  --text-body: 16px;
+  --text-body-lg: 18px;
+  --text-subheading: 21px;
+  --text-heading-sm: 28px;
+  --text-heading: 32px;
+  --font-weight-w360: 360;
+  --font-weight-regular: 400;
+  --font-weight-w420: 420;
+  --font-weight-w480: 480;
+  --font-weight-w530: 530;
+
+  /* Espaçamento */
+  --spacing-4: 4px;
+  --spacing-8: 8px;
+  --spacing-12: 12px;
+  --spacing-16: 16px;
+  --spacing-20: 20px;
+  --spacing-24: 24px;
+  --spacing-32: 32px;
+  --spacing-40: 40px;
+  --spacing-56: 56px;
+  --spacing-72: 72px;
+
+  /* Raios */
+  --radius-default: 4px;
+  --radius-lg: 8px;
+  --radius-cards: 12px;
+  --radius-inputs: 32px;
+  --radius-buttons: 32px;
+  --radius-tags: 40px;
+}

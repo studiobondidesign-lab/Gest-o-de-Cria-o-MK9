@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: mk9-tarefas
+    runtime: node
+    plan: starter
+    buildCommand: "true"
+    startCommand: npm start
+    healthCheckPath: /api/config
+    envVars:
+      - key: NODE_VERSION
+        value: "22.12.0"
+      - key: DATA_DIR
+        value: /var/data
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: REGISTRATION_CODE
+        sync: false
+      - key: ALLOWED_EMAIL_DOMAIN
+        sync: false
+    disk:
+      name: mk9-data
+      mountPath: /var/data
+      sizeGB: 5

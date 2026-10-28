@@ -1,0 +1,1166 @@
+import {
+  esc, icon, PRIORITY, MONTHS_FULL, ymd, today, addDays, fmtDate, dateClass, timeAgo, fmtSize,
+  api, setUnauthorizedHandler, toast, fail, openPopover, closePopover, menuPopover, popoverOpen, dialog, confirmDialog, autosize,
+} from './ui.js';
+import { openTask, closeTask, refreshTask, currentTaskId, taskIsBusy } from './task.js';
+
+// ---------- estado ----------
+export const S = {
+  me: null, users: [], spaces: [], lists: [], tags: [], unread: 0, favorites: [],
+  route: { name: 'inicio' }, tasks: [], loadingTasks: false,
+  filters: { q: '', assignees: [], priorities: [], showDone: true, sort: 'manual' },
+  calMonth: (() => { const d = new Date(); d.setDate(1); return d; })(),
+  config: {},
+};
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem('mk9:' + k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('mk9:' + k, JSON.stringify(v)); } catch { /* sem storage */ } },
+};
+const collapsedSpaces = new Set(store.get('collapsedSpaces', []));
+const collapsedGroups = new Set();
+
+export const userById = (id) => S.users.find((u) => u.id === id);
+export const listById = (id) => S.lists.find((l) => l.id === id);
+export const spaceById = (id) => S.spaces.find((s) => s.id === id);
+export const tagById = (id) => S.tags.find((t) => t.id === id);
+export const statusOf = (task) => listById(task.list_id)?.statuses.find((s) => s.id === task.status) || { id: task.status, name: task.status, color: '#70707d', type: 'open' };
+export const isDone = (task) => statusOf(task).type === 'done';
+
+export const initials = (name = '?') => name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase() || '?';
+export const avatar = (u, size = '') => u ? `<span class="avatar ${size}" style="background:${esc(u.color)}" title="${esc(u.name)}">${esc(initials(u.name))}</span>` : '';
+export const avatars = (ids, max = 3) => {
+  const us = ids.map(userById).filter(Boolean);
+  if (!us.length) return `<span class="avatar-empty">${icon('user', 'sm')}</span>`;
+  const extra = us.length > max ? `<span class="avatar" style="background:var(--surface-3);color:var(--text)">+${us.length - max}</span>` : '';
+  return `<span class="avatars">${us.slice(0, max).map((u) => avatar(u)).join('')}${extra}</span>`;
+};
+export const statusPill = (st, tag = 'span', attrs = '', cls = '') => `<${tag} class="status-pill ${cls}" style="--c:${esc(st.color)}" ${attrs}><span class="dot"></span>${esc(st.name)}</${tag}>`;
+export const prioHtml = (p, withLabel = true) => p
+  ? `<span class="prio" style="--p:${PRIORITY[p].color}">${icon('flag', 'sm')}${withLabel ? PRIORITY[p].label : ''}</span>`
+  : `<span class="prio faint">${icon('flag', 'sm')}${withLabel ? '—' : ''}</span>`;
+export const tagHtml = (t, removable = false) => t ? `<span class="tag" style="--c:${esc(t.color)}">${esc(t.name)}${removable ? `<button data-remove-tag="${esc(t.id)}" aria-label="Remover etiqueta">${icon('x', 'sm')}</button>` : ''}</span>` : '';
+export const dateHtml = (task) => task.due_date ? `<span class="date ${dateClass(task.due_date, isDone(task))}">${icon('calendar', 'sm')}${fmtDate(task.due_date)}</span>` : '';
+
+// ---------- dados ----------
+export async function loadBootstrap() {
+  const b = await api('GET', '/api/bootstrap');
+  Object.assign(S, { me: b.me, users: b.users, spaces: b.spaces, lists: b.lists, tags: b.tags, unread: b.unread, favorites: b.favorites });
+}
+
+function tasksQuery() {
+  const r = S.route;
+  if (r.name === 'lista') return `list_id=${encodeURIComponent(r.id)}`;
+  if (r.name === 'espaco') return `space_id=${encodeURIComponent(r.id)}`;
+  if (r.name === 'minhas') return 'assignee=me';
+  if (r.name === 'inicio') return '';
+  return null;
+}
+let tasksSeq = 0;
+export async function loadTasks() {
+  const q = tasksQuery();
+  if (q === null) { S.tasks = []; return; }
+  const seq = ++tasksSeq;
+  const rows = await api('GET', '/api/tasks?' + q);
+  if (seq === tasksSeq) S.tasks = rows;
+}
+
+// Atualiza uma tarefa localmente (otimista) e no servidor.
+export async function patchTask(id, patch, { silent = false } = {}) {
+  const t = S.tasks.find((x) => x.id === id);
+  const before = t ? { ...t } : null;
+  if (t) { Object.assign(t, patch); renderContent(); }
+  try {
+    const updated = await api('PATCH', `/api/tasks/${id}`, patch);
+    const i = S.tasks.findIndex((x) => x.id === id);
+    if (i >= 0) S.tasks[i] = updated;
+    renderContent();
+    if (currentTaskId() === id || currentTaskId() === updated.parent_id) refreshTask();
+    return updated;
+  } catch (e) {
+    if (t && before) { Object.assign(t, before); renderContent(); }
+    if (!silent) fail(e);
+    throw e;
+  }
+}
+
+export async function createTask(data) {
+  const t = await api('POST', '/api/tasks', data);
+  if (!S.tasks.some((x) => x.id === t.id) && tasksQuery() !== null) {
+    const r = S.route;
+    const belongs = r.name === 'inicio' || (r.name === 'lista' && t.list_id === r.id)
+      || (r.name === 'espaco' && listById(t.list_id)?.space_id === r.id) || (r.name === 'minhas' && t.assignees.includes(S.me.id));
+    if (belongs) S.tasks.push(t);
+  }
+  renderContent();
+  renderSidebar();
+  return t;
+}
+
+export function doneStatusFor(task) {
+  const l = listById(task.list_id);
+  return l?.statuses.find((s) => s.type === 'done')?.id;
+}
+export function openStatusFor(task) {
+  const l = listById(task.list_id);
+  return (l?.statuses.find((s) => s.type === 'open') || l?.statuses[0])?.id;
+}
+export function toggleDone(task) {
+  return patchTask(task.id, { status: isDone(task) ? openStatusFor(task) : doneStatusFor(task) });
+}
+
+// ---------- popovers de campos ----------
+export function pickStatus(anchor, task, onDone) {
+  const l = listById(task.list_id);
+  menuPopover(anchor, {
+    items: () => l.statuses.map((s) => ({ id: s.id, text: s.name, selected: s.id === task.status, html: statusPill(s) })),
+    onPick: async (id) => { if (id !== task.status) { await (onDone ? onDone({ status: id }) : patchTask(task.id, { status: id })); } },
+  });
+}
+export function pickPriority(anchor, task, onDone) {
+  menuPopover(anchor, {
+    items: () => [...Object.entries(PRIORITY).map(([k, p]) => ({ id: k, text: p.label, selected: task.priority === k, html: prioHtml(k) })),
+      { sep: true }, { id: '', text: 'limpar', html: '<span class="muted">Sem prioridade</span>' }],
+    onPick: async (id) => { const p = id || null; if (p !== task.priority) await (onDone ? onDone({ priority: p }) : patchTask(task.id, { priority: p })); },
+  });
+}
+export function pickAssignees(anchor, task, onDone) {
+  let sel = [...task.assignees];
+  menuPopover(anchor, {
+    search: true, multi: true, width: 260,
+    items: () => S.users.filter((u) => u.active).map((u) => ({ id: u.id, text: u.name + ' ' + u.email, selected: sel.includes(u.id),
+      html: `${avatar(u)}<span class="ellipsis">${esc(u.name)}${u.id === S.me.id ? ' <span class="faint">(você)</span>' : ''}</span>` })),
+    onPick: async (id) => {
+      sel = sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id];
+      task.assignees = sel;
+      await (onDone ? onDone({ assignees: sel }) : patchTask(task.id, { assignees: sel }));
+    },
+  });
+}
+export function pickTags(anchor, task, onDone) {
+  let sel = [...task.tags];
+  menuPopover(anchor, {
+    search: true, multi: true, width: 260,
+    items: () => S.tags.map((t) => ({ id: t.id, text: t.name, selected: sel.includes(t.id), html: tagHtml(t) })),
+    footer: (q) => q && !S.tags.some((t) => t.name.toLowerCase() === q) ? `<div class="menu-sep"></div><button class="menu-item" data-create="1">${icon('plus', 'sm')} Criar etiqueta “${esc(q)}”</button>` : '',
+    onPick: async (id, el, q) => {
+      if (el.dataset.create) {
+        const t = await api('POST', '/api/tags', { name: q });
+        if (!S.tags.some((x) => x.id === t.id)) S.tags.push(t);
+        id = t.id;
+        const inp = el.closest('.popover').querySelector('.pop-search input');
+        if (inp) inp.value = '';
+      }
+      sel = sel.includes(id) && !el.dataset.create ? sel.filter((x) => x !== id) : [...new Set([...sel, id])];
+      task.tags = sel;
+      await (onDone ? onDone({ tags: sel }) : patchTask(task.id, { tags: sel }));
+    },
+  });
+}
+
+// ---------- roteamento ----------
+function parseHash() {
+  const raw = location.hash.replace(/^#\/?/, '');
+  const [pathPart, query = ''] = raw.split('?');
+  const parts = pathPart.split('/').filter(Boolean);
+  const params = new URLSearchParams(query);
+  const name = parts[0] || 'inicio';
+  return { name, id: parts[1], view: parts[2] || store.get('view:' + parts[1], 'lista'), task: params.get('tarefa') };
+}
+export function go(hash) { location.hash = hash; }
+export function routeHash(r = S.route) {
+  if (r.name === 'lista' || r.name === 'espaco') return `#/${r.name}/${r.id}/${r.view}`;
+  if (r.name === 'minhas') return `#/minhas/_/${r.view}`;
+  return `#/${r.name}`;
+}
+export function taskHash(id) { return routeHash() + '?tarefa=' + id; }
+
+async function onRoute() {
+  const r = parseHash();
+  const prev = S.route;
+  const changed = prev.name !== r.name || prev.id !== r.id || prev.view !== r.view;
+  S.route = r;
+  if (r.id && (r.name === 'lista' || r.name === 'espaco')) store.set('view:' + r.id, r.view);
+  if (changed || !S.shellRendered) {
+    S.filters.q = '';
+    renderShell();
+    S.loadingTasks = true;
+    renderContent();
+    try { await loadTasks(); } catch (e) { fail(e); }
+    S.loadingTasks = false;
+    renderContent();
+  }
+  if (r.task && r.task !== currentTaskId()) openTask(r.task);
+  else if (!r.task && currentTaskId()) closeTask(false);
+  document.querySelector('.app')?.classList.remove('nav-open');
+}
+
+// ---------- autenticação ----------
+function renderAuth(mode = 'login') {
+  const root = document.getElementById('root');
+  const reg = mode === 'register';
+  root.innerHTML = `
+  <div class="auth">
+    <section class="auth-hero">
+      <span class="brand"><span class="brand-mark">MK9</span>Criação</span>
+      <div>
+        <h1>Tudo que a Criação produz, num só lugar.</h1>
+        <p>Briefings, peças, revisões e aprovações organizados em espaços, listas e quadros, com a equipe inteira vendo o mesmo andamento.</p>
+      </div>
+      <span class="caption faint">MK9 · uso interno</span>
+    </section>
+    <section class="auth-panel">
+      <div class="auth-card">
+        <div class="auth-switch" role="tablist">
+          <button class="${reg ? '' : 'on'}" data-mode="login" role="tab">Entrar</button>
+          <button class="${reg ? 'on' : ''}" data-mode="register" role="tab">Criar conta</button>
+        </div>
+        <div>
+          <h2 class="h-display" style="font-size:var(--text-heading-sm)">${reg ? 'Crie sua conta' : 'Bem-vindo de volta'}</h2>
+          <p class="muted" style="margin:8px 0 0">${reg ? 'Leva menos de um minuto.' : 'Entre com seu e-mail e senha.'}</p>
+        </div>
+        <form novalidate>
+          ${reg ? `<div class="field"><label for="f-name">Nome</label><input class="input" id="f-name" name="name" autocomplete="name" required></div>` : ''}
+          <div class="field"><label for="f-email">E-mail</label><input class="input" id="f-email" name="email" type="email" autocomplete="email" required
+            placeholder="${S.config.emailDomain ? 'voce@' + esc(S.config.emailDomain) : 'voce@mk9.com.br'}"></div>
+          <div class="field"><label for="f-pass">Senha</label><input class="input" id="f-pass" name="password" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required minlength="8" ${reg ? 'placeholder="Mínimo de 8 caracteres"' : ''}></div>
+          ${reg && S.config.registrationCode ? `<div class="field"><label for="f-code">Código de convite</label><input class="input" id="f-code" name="code" required></div>` : ''}
+          <div class="form-error" role="alert"></div>
+          <button class="btn btn-primary btn-block" type="submit">${reg ? 'Criar conta' : 'Entrar'}</button>
+        </form>
+      </div>
+    </section>
+  </div>`;
+  root.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => renderAuth(b.dataset.mode)));
+  const form = root.querySelector('form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(form));
+    const err = form.querySelector('.form-error');
+    const btn = form.querySelector('button[type=submit]');
+    err.textContent = '';
+    btn.disabled = true;
+    try {
+      await api('POST', reg ? '/api/auth/register' : '/api/auth/login', data, { quiet401: true });
+      await boot();
+    } catch (ex) { err.textContent = ex.message; btn.disabled = false; }
+  });
+  root.querySelector('input')?.focus();
+}
+
+// ---------- shell ----------
+function renderShell() {
+  const root = document.getElementById('root');
+  if (!root.querySelector('.app')) {
+    root.innerHTML = `<div class="app"><aside class="sidebar" aria-label="Navegação"></aside><main class="main"><div class="topbar"></div><div class="toolbar-slot"></div><div class="content" tabindex="-1"></div></main></div>`;
+  }
+  S.shellRendered = true;
+  renderSidebar();
+  renderTop();
+}
+
+export function renderSidebar() {
+  const el = document.querySelector('.sidebar');
+  if (!el) return;
+  const r = S.route;
+  const counts = {};
+  const navItem = (name, ico, label, extra = '') => `<a class="nav-item ${r.name === name ? 'on' : ''}" href="#/${name}">${icon(ico)}${label}${extra}</a>`;
+  const favLists = S.favorites.map(listById).filter(Boolean);
+  el.innerHTML = `
+    <div class="sidebar-top">
+      <span class="brand"><span class="brand-mark">MK9</span><span>Criação <small>Tarefas</small></span></span>
+      <button class="search-trigger" data-act="palette">${icon('search', 'sm')}Buscar<kbd>Ctrl K</kbd></button>
+    </div>
+    <nav class="nav">
+      ${navItem('inicio', 'home', 'Início')}
+      ${navItem('entrada', 'inbox', 'Caixa de entrada', S.unread ? `<span class="count">${S.unread > 99 ? '99+' : S.unread}</span>` : '')}
+      ${navItem('minhas', 'user', 'Minhas tarefas')}
+      ${navItem('membros', 'users', 'Equipe')}
+    </nav>
+    <div class="sidebar-scroll">
+      ${favLists.length ? `<div class="sidebar-section"><div class="sidebar-section-head"><span class="eyebrow">Favoritos</span></div>
+        ${favLists.map((l) => `<div class="list-row ${r.name === 'lista' && r.id === l.id ? 'on' : ''}"><a class="grow" href="#/lista/${l.id}/${store.get('view:' + l.id, 'lista')}">${icon('star', 'sm')}<span class="ellipsis">${esc(l.name)}</span></a></div>`).join('')}</div>` : ''}
+      <div class="sidebar-section">
+        <div class="sidebar-section-head"><span class="eyebrow">Espaços</span><button class="icon-btn" data-act="new-space" title="Novo espaço" aria-label="Novo espaço">${icon('plus', 'sm')}</button></div>
+        ${S.spaces.length ? S.spaces.map((s) => {
+          const lists = S.lists.filter((l) => l.space_id === s.id);
+          const collapsed = collapsedSpaces.has(s.id);
+          return `<div class="space ${collapsed ? 'collapsed' : ''}">
+            <div class="space-row ${r.name === 'espaco' && r.id === s.id ? 'on' : ''}">
+              <button class="icon-btn" style="width:20px;height:20px" data-act="toggle-space" data-id="${s.id}" aria-label="Expandir">${icon('chevron', 'sm caret')}</button>
+              <a class="grow" href="#/espaco/${s.id}/${store.get('view:' + s.id, 'lista')}"><span class="space-chip" style="background:${esc(s.color)}">${esc(initials(s.name)[0])}</span><span class="ellipsis">${esc(s.name)}</span></a>
+              <span class="actions"><button class="icon-btn" style="width:24px;height:24px" data-act="space-menu" data-id="${s.id}" aria-label="Opções do espaço">${icon('more', 'sm')}</button>
+              <button class="icon-btn" style="width:24px;height:24px" data-act="new-list" data-id="${s.id}" aria-label="Nova lista">${icon('plus', 'sm')}</button></span>
+            </div>
+            <div class="space-lists">
+              ${lists.map((l) => `<div class="list-row ${r.name === 'lista' && r.id === l.id ? 'on' : ''}">
+                <a class="grow" href="#/lista/${l.id}/${store.get('view:' + l.id, 'lista')}"><span class="dot" style="color:${esc(s.color)}"></span><span class="ellipsis">${esc(l.name)}</span></a>
+                <span class="actions"><button class="icon-btn" style="width:24px;height:24px" data-act="list-menu" data-id="${l.id}" aria-label="Opções da lista">${icon('more', 'sm')}</button></span>
+              </div>`).join('')}
+              ${!lists.length ? `<button class="list-row faint" style="width:100%" data-act="new-list" data-id="${s.id}">${icon('plus', 'sm')} Nova lista</button>` : ''}
+            </div>
+          </div>`;
+        }).join('') : `<button class="nav-item" data-act="new-space">${icon('plus', 'sm')}Criar primeiro espaço</button>`}
+      </div>
+    </div>
+    <div class="sidebar-foot">
+      <button class="me-btn" data-act="me-menu">${avatar(S.me, 'md')}<span style="min-width:0;flex:1"><span class="ellipsis" style="display:block">${esc(S.me.name)}</span><span class="caption faint ellipsis" style="display:block">${esc(S.me.email)}</span></span>${icon('more', 'sm')}</button>
+    </div>`;
+  void counts;
+}
+
+function renderTop() {
+  const top = document.querySelector('.topbar');
+  const tb = document.querySelector('.toolbar-slot');
+  if (!top) return;
+  const r = S.route;
+  const burger = `<button class="icon-btn mobile-only" data-act="nav" aria-label="Menu">${icon('menu')}</button>`;
+  let title = '', crumbs = '', actions = '', hasViews = false;
+  if (r.name === 'lista') {
+    const l = listById(r.id), s = l && spaceById(l.space_id);
+    if (!l) { top.innerHTML = burger; tb.innerHTML = ''; return; }
+    crumbs = `<a href="#/espaco/${s.id}/${store.get('view:' + s.id, 'lista')}">${esc(s.name)}</a>`;
+    const fav = S.favorites.includes(l.id);
+    title = `${esc(l.name)}`;
+    actions = `<button class="icon-btn" data-act="fav" data-id="${l.id}" title="${fav ? 'Remover dos favoritos' : 'Favoritar'}" aria-label="Favoritar" style="${fav ? 'color:var(--warning)' : ''}">${icon('star')}</button>
+      <button class="icon-btn" data-act="list-menu" data-id="${l.id}" aria-label="Opções da lista">${icon('more')}</button>`;
+    hasViews = true;
+  } else if (r.name === 'espaco') {
+    const s = spaceById(r.id);
+    if (!s) { top.innerHTML = burger; tb.innerHTML = ''; return; }
+    title = `<span class="space-chip" style="background:${esc(s.color)};width:28px;height:28px;font-size:13px">${esc(initials(s.name)[0])}</span>${esc(s.name)}`;
+    crumbs = 'Espaço';
+    actions = `<button class="icon-btn" data-act="space-menu" data-id="${s.id}" aria-label="Opções do espaço">${icon('more')}</button>`;
+    hasViews = true;
+  } else if (r.name === 'minhas') { title = 'Minhas tarefas'; crumbs = 'Atribuídas a você'; hasViews = true; }
+  const titled = r.name === 'lista' || r.name === 'espaco' || r.name === 'minhas';
+  top.innerHTML = titled ? `${burger}<div style="min-width:0;flex:1"><div class="crumbs">${crumbs}</div><div class="page-title"><h1 class="h-section" style="display:flex;align-items:center;gap:10px">${title}</h1>${actions}</div></div>
+    <button class="btn btn-primary" data-act="new-task">${icon('plus', 'sm')}Nova tarefa</button>` : `${burger}`;
+  top.style.display = titled ? '' : (innerWidth <= 860 ? '' : 'none');
+  if (!hasViews) { tb.innerHTML = ''; return; }
+  const f = S.filters;
+  const view = r.view;
+  tb.innerHTML = `<div class="toolbar">
+    <div class="tabs" role="tablist">
+      ${[['lista', 'list', 'Lista'], ['quadro', 'board', 'Quadro'], ['calendario', 'calendar', 'Calendário']].map(([v, ic, label]) =>
+        `<a class="tab ${view === v ? 'on' : ''}" role="tab" href="${r.name === 'minhas' ? `#/minhas/_/${v}` : `#/${r.name}/${r.id}/${v}`}">${icon(ic, 'sm')}${label}</a>`).join('')}
+    </div>
+    <span class="spacer"></span>
+    <div class="filter-search">${icon('search', 'sm')}<input class="input" data-filter-q placeholder="Filtrar tarefas" value="${esc(f.q)}" aria-label="Filtrar tarefas"></div>
+    <button class="chip-btn ${f.assignees.length ? 'on' : ''}" data-act="filter-assignee">${icon('user', 'sm')}Responsável${f.assignees.length ? ` · ${f.assignees.length}` : ''}</button>
+    <button class="chip-btn ${f.priorities.length ? 'on' : ''}" data-act="filter-priority">${icon('flag', 'sm')}Prioridade${f.priorities.length ? ` · ${f.priorities.length}` : ''}</button>
+    <button class="chip-btn ${f.sort !== 'manual' ? 'on' : ''}" data-act="sort">${icon('sort', 'sm')}${{ manual: 'Ordem manual', due: 'Prazo', priority: 'Prioridade', title: 'Nome', created: 'Mais recentes' }[f.sort]}</button>
+    <button class="chip-btn ${f.showDone ? '' : 'on'}" data-act="toggle-done">${icon('check', 'sm')}${f.showDone ? 'Ocultar concluídas' : 'Mostrando abertas'}</button>
+  </div>`;
+}
+
+// ---------- filtros ----------
+function filtered(tasks) {
+  const f = S.filters;
+  const q = f.q.trim().toLowerCase();
+  let out = tasks.filter((t) => !t.archived);
+  // Em listas e espaços, subtarefas aparecem dentro da tarefa pai (como no ClickUp)
+  if (S.route.name === 'lista' || S.route.name === 'espaco') out = out.filter((t) => !t.parent_id);
+  if (q) out = out.filter((t) => t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q));
+  if (f.assignees.length) out = out.filter((t) => f.assignees.some((a) => a === '__none' ? !t.assignees.length : t.assignees.includes(a)));
+  if (f.priorities.length) out = out.filter((t) => f.priorities.includes(t.priority || '__none'));
+  if (!f.showDone) out = out.filter((t) => !isDone(t));
+  return sortTasks(out);
+}
+function sortTasks(arr) {
+  const s = S.filters.sort;
+  const by = {
+    manual: (a, b) => a.position - b.position,
+    due: (a, b) => (a.due_date || '9999') < (b.due_date || '9999') ? -1 : (a.due_date || '9999') > (b.due_date || '9999') ? 1 : a.position - b.position,
+    priority: (a, b) => (PRIORITY[a.priority]?.rank ?? 9) - (PRIORITY[b.priority]?.rank ?? 9) || a.position - b.position,
+    title: (a, b) => a.title.localeCompare(b.title, 'pt-BR'),
+    created: (a, b) => (a.created_at < b.created_at ? 1 : -1),
+  }[s];
+  return [...arr].sort(by);
+}
+
+// Colunas de status para a visão atual (une listas diferentes pelo id do status)
+function viewStatuses(tasks) {
+  const r = S.route;
+  let lists;
+  if (r.name === 'lista') lists = [listById(r.id)].filter(Boolean);
+  else if (r.name === 'espaco') lists = S.lists.filter((l) => l.space_id === r.id);
+  else lists = [...new Set(tasks.map((t) => t.list_id))].map(listById).filter(Boolean);
+  const seen = new Map();
+  for (const l of lists) for (const s of l.statuses) if (!seen.has(s.id)) seen.set(s.id, s);
+  for (const t of tasks) if (!seen.has(t.status)) seen.set(t.status, statusOf(t));
+  return [...seen.values()];
+}
+function defaultListForView() {
+  const r = S.route;
+  if (r.name === 'lista') return listById(r.id);
+  if (r.name === 'espaco') return S.lists.find((l) => l.space_id === r.id);
+  return null;
+}
+
+// ---------- conteúdo ----------
+export function renderContent() {
+  const c = document.querySelector('.content');
+  if (!c) return;
+  const r = S.route;
+  const scroll = c.scrollTop, scrollX = c.firstElementChild?.scrollLeft;
+  if (S.loadingTasks && ['lista', 'espaco', 'minhas', 'inicio'].includes(r.name)) { c.innerHTML = '<div class="loading">Carregando…</div>'; return; }
+  if ((r.name === 'lista' && !listById(r.id)) || (r.name === 'espaco' && !spaceById(r.id))) {
+    c.innerHTML = `<div class="empty"><div class="h-card">Não encontramos esta página</div><p>Ela pode ter sido arquivada.</p><a class="btn btn-ghost" href="#/inicio">Voltar ao início</a></div>`;
+    return;
+  }
+  if (r.name === 'inicio') c.innerHTML = homeView();
+  else if (r.name === 'entrada') { c.innerHTML = '<div class="loading">Carregando…</div>'; inboxView(c); return; }
+  else if (r.name === 'membros') c.innerHTML = membersView();
+  else if (r.name === 'perfil') { c.innerHTML = profileView(); bindProfile(c); }
+  else if (r.view === 'quadro') c.innerHTML = boardView();
+  else if (r.view === 'calendario') c.innerHTML = calendarView();
+  else c.innerHTML = listView();
+  c.scrollTop = scroll;
+  if (scrollX && c.firstElementChild) c.firstElementChild.scrollLeft = scrollX;
+}
+
+function emptyState() {
+  const r = S.route;
+  if (r.name === 'minhas') return `<div class="empty"><div class="h-card">Nada atribuído a você</div><p>Quando alguém te colocar como responsável, a tarefa aparece aqui.</p></div>`;
+  if (r.name === 'espaco' && !S.lists.some((l) => l.space_id === r.id)) return `<div class="empty"><div class="h-card">Este espaço ainda não tem listas</div><button class="btn btn-primary" data-act="new-list" data-id="${r.id}">${icon('plus', 'sm')}Criar lista</button></div>`;
+  return '';
+}
+
+function rowHtml(t, { showList = false } = {}) {
+  const st = statusOf(t), done = st.type === 'done';
+  const l = listById(t.list_id);
+  const parent = t.parent_id ? S.tasks.find((x) => x.id === t.parent_id) : null;
+  const drag = S.filters.sort === 'manual' ? 'draggable="true"' : '';
+  return `<div class="row ${done ? 'done' : ''}" data-task="${t.id}" data-drag="${t.id}" ${drag}>
+    <div class="title-cell">
+      <input type="checkbox" class="check" data-act="toggle-done-task" data-id="${t.id}" ${done ? 'checked' : ''} aria-label="Concluir" data-stop>
+      <span class="t">${esc(t.title)}</span>
+      ${parent ? `<span class="sub-of">${icon('subtask', 'sm')} ${esc(parent.title)}</span>` : ''}
+      ${showList && l ? `<span class="sub-of">${esc(l.name)}</span>` : ''}
+      <span class="meta-icons">
+        ${t.subtasks.total ? `<span title="Subtarefas">${icon('subtask', 'sm')}${t.subtasks.done}/${t.subtasks.total}</span>` : ''}
+        ${t.checklist.total ? `<span title="Checklist">${icon('checklist', 'sm')}${t.checklist.done}/${t.checklist.total}</span>` : ''}
+        ${t.comment_count ? `<span title="Comentários">${icon('comment', 'sm')}${t.comment_count}</span>` : ''}
+        ${t.attachment_count ? `<span title="Anexos">${icon('paperclip', 'sm')}${t.attachment_count}</span>` : ''}
+      </span>
+      <span class="row-tags">${t.tags.map((id) => tagHtml(tagById(id))).join('')}</span>
+    </div>
+    <div><button class="cell-btn" data-act="assignees" data-id="${t.id}" data-stop aria-label="Responsáveis">${avatars(t.assignees)}</button></div>
+    <div><label class="cell-btn" data-stop>${t.due_date ? dateHtml(t) : `<span class="date faint">${icon('calendar', 'sm')}—</span>`}
+      <input type="date" class="sr-only" data-date-field="due_date" data-id="${t.id}" value="${esc(t.due_date || '')}" aria-label="Prazo"></label></div>
+    <div><button class="cell-btn" data-act="priority" data-id="${t.id}" data-stop>${prioHtml(t.priority)}</button></div>
+    <div style="min-width:0">${statusPill(st, 'button', `data-act="status" data-id="${t.id}" data-stop`)}</div>
+    <div><button class="icon-btn" data-act="task-menu" data-id="${t.id}" data-stop aria-label="Mais opções">${icon('more', 'sm')}</button></div>
+  </div>`;
+}
+
+function listView() {
+  const r = S.route;
+  const tasks = filtered(S.tasks);
+  const statuses = viewStatuses(S.tasks);
+  const canAdd = r.name !== 'minhas' && defaultListForView();
+  const empty = emptyState();
+  if (empty && !tasks.length) return empty;
+  const multi = r.name !== 'lista';
+  return `<div class="page">${statuses.map((st) => {
+    const rows = tasks.filter((t) => t.status === st.id);
+    if (!rows.length && (!canAdd || (!S.filters.showDone && st.type === 'done'))) return '';
+    const key = r.id + ':' + st.id;
+    return `<section class="group ${collapsedGroups.has(key) ? 'collapsed' : ''}" data-drop-status="${esc(st.id)}">
+      <div class="group-head">
+        <button class="icon-btn" style="width:22px;height:22px" data-act="toggle-group" data-key="${esc(key)}" aria-label="Recolher">${icon('chevron', 'sm caret')}</button>
+        ${statusPill(st)}<span class="count">${rows.length}</span>
+      </div>
+      <div class="rows">
+        ${rows.length ? `<div class="row-head"><span>Nome</span><span>Responsável</span><span>Prazo</span><span>Prioridade</span><span>Status</span><span></span></div>` : ''}
+        ${rows.map((t) => rowHtml(t, { showList: multi })).join('')}
+        ${canAdd ? `<div class="add-row">${icon('plus', 'sm')}<input data-quick-add="${esc(st.id)}" placeholder="Adicionar tarefa e pressionar Enter" aria-label="Nova tarefa em ${esc(st.name)}"></div>` : ''}
+      </div>
+    </section>`;
+  }).join('') || `<div class="empty"><div class="h-card">Nenhuma tarefa encontrada</div><p>Ajuste os filtros ou crie uma nova tarefa.</p></div>`}</div>`;
+}
+
+function cardHtml(t) {
+  const st = statusOf(t), done = st.type === 'done';
+  const total = t.checklist.total + t.subtasks.total, dn = t.checklist.done + t.subtasks.done;
+  const r = S.route;
+  return `<article class="card ${done ? 'done' : ''}" data-task="${t.id}" data-drag="${t.id}" draggable="true">
+    ${r.name !== 'lista' ? `<span class="caption faint">${esc(listById(t.list_id)?.name || '')}</span>` : ''}
+    ${t.tags.length ? `<div class="card-tags">${t.tags.map((id) => tagHtml(tagById(id))).join('')}</div>` : ''}
+    <div class="t">${esc(t.title)}</div>
+    ${total ? `<div class="progress" title="${dn}/${total} itens"><i style="width:${Math.round((dn / total) * 100)}%"></i></div>` : ''}
+    <div class="card-foot">
+      <span style="display:flex;gap:10px;align-items:center">${dateHtml(t)}${t.priority ? prioHtml(t.priority, false) : ''}
+        <span class="meta-icons">${t.comment_count ? `<span>${icon('comment', 'sm')}${t.comment_count}</span>` : ''}${t.attachment_count ? `<span>${icon('paperclip', 'sm')}${t.attachment_count}</span>` : ''}${t.subtasks.total ? `<span>${icon('subtask', 'sm')}${t.subtasks.done}/${t.subtasks.total}</span>` : ''}</span></span>
+      <button class="cell-btn" data-act="assignees" data-id="${t.id}" data-stop style="margin:0">${avatars(t.assignees, 2)}</button>
+    </div>
+  </article>`;
+}
+
+function boardView() {
+  const r = S.route;
+  const tasks = filtered(S.tasks);
+  const empty = emptyState();
+  if (empty && !tasks.length) return empty;
+  const statuses = viewStatuses(S.tasks);
+  const canAdd = r.name !== 'minhas' && defaultListForView();
+  return `<div class="board">${statuses.filter((st) => S.filters.showDone || st.type !== 'done').map((st) => {
+    const cards = tasks.filter((t) => t.status === st.id);
+    return `<section class="column" data-drop-status="${esc(st.id)}">
+      <div class="column-head">${statusPill(st)}<span class="count">${cards.length}</span></div>
+      <div class="column-body">${cards.map(cardHtml).join('')}</div>
+      ${canAdd ? `<div class="add-row">${icon('plus', 'sm')}<input data-quick-add="${esc(st.id)}" placeholder="Nova tarefa" aria-label="Nova tarefa em ${esc(st.name)}"></div>` : ''}
+    </section>`;
+  }).join('')}</div>`;
+}
+
+function calendarView() {
+  const tasks = filtered(S.tasks);
+  const m = S.calMonth;
+  const first = new Date(m.getFullYear(), m.getMonth(), 1);
+  const start = new Date(first); start.setDate(1 - first.getDay());
+  const days = [];
+  for (let i = 0; i < 42; i++) { const d = new Date(start); d.setDate(start.getDate() + i); days.push(d); }
+  if (days[35].getMonth() !== m.getMonth()) days.length = 35;
+  const byDay = {};
+  for (const t of tasks) if (t.due_date) (byDay[t.due_date] ||= []).push(t);
+  const noDate = tasks.filter((t) => !t.due_date && !isDone(t)).length;
+  const t0 = today();
+  const canAdd = S.route.name !== 'minhas' ? defaultListForView() : S.lists[0];
+  return `<div class="cal">
+    <div class="cal-head">
+      <button class="icon-btn" data-act="cal-prev" aria-label="Mês anterior">${icon('chevronLeft')}</button>
+      <h2 class="h-section" style="min-width:200px">${MONTHS_FULL[m.getMonth()]} ${m.getFullYear()}</h2>
+      <button class="icon-btn" data-act="cal-next" aria-label="Próximo mês">${icon('chevronRight')}</button>
+      <button class="btn btn-ghost btn-sm" data-act="cal-today">Hoje</button>
+      <span class="spacer" style="flex:1"></span>
+      ${noDate ? `<span class="caption faint">${noDate} tarefa${noDate > 1 ? 's' : ''} aberta${noDate > 1 ? 's' : ''} sem prazo</span>` : ''}
+    </div>
+    <div class="cal-grid">
+      ${['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map((d) => `<div class="cal-dow">${d}</div>`).join('')}
+      ${days.map((d) => {
+        const k = ymd(d), list = byDay[k] || [];
+        return `<div class="cal-day ${d.getMonth() !== m.getMonth() ? 'other' : ''} ${k === t0 ? 'today' : ''}" data-drop-date="${k}">
+          <div class="day-head"><span class="n">${d.getDate()}</span>${canAdd ? `<button class="icon-btn" data-act="cal-add" data-date="${k}" aria-label="Adicionar tarefa em ${k}">${icon('plus', 'sm')}</button>` : ''}</div>
+          ${list.slice(0, 4).map((t) => `<div class="cal-task ${isDone(t) ? 'done' : ''}" data-task="${t.id}" data-drag="${t.id}" draggable="true" style="--c:${esc(statusOf(t).color)}"><span class="dot"></span><span class="ellipsis">${esc(t.title)}</span></div>`).join('')}
+          ${list.length > 4 ? `<button class="cal-more" data-act="cal-more" data-date="${k}">+${list.length - 4} mais</button>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function homeView() {
+  const mine = S.tasks.filter((t) => t.assignees.includes(S.me.id) && !t.archived);
+  const open = mine.filter((t) => !isDone(t));
+  const t0 = today(), week = addDays(t0, 7), weekAgo = new Date(Date.now() - 7 * 864e5).toISOString();
+  const overdue = open.filter((t) => t.due_date && t.due_date < t0);
+  const due = open.filter((t) => t.due_date === t0);
+  const upcoming = open.filter((t) => t.due_date && t.due_date > t0 && t.due_date <= week).sort((a, b) => (a.due_date < b.due_date ? -1 : 1));
+  const nodate = open.filter((t) => !t.due_date);
+  const doneWeek = mine.filter((t) => isDone(t) && t.completed_at && t.completed_at >= weekAgo);
+  const h = new Date().getHours();
+  const hello = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+  const mini = (t) => {
+    const l = listById(t.list_id);
+    return `<div class="mini-task" data-task="${t.id}"><input type="checkbox" class="check" data-act="toggle-done-task" data-id="${t.id}" data-stop aria-label="Concluir">
+      <span class="t">${esc(t.title)}</span><span class="where">${esc(l?.name || '')}</span>${dateHtml(t)}${t.priority ? prioHtml(t.priority, false) : ''}</div>`;
+  };
+  const panel = (title, list, emptyMsg) => `<div class="panel"><div class="panel-head"><h3 class="h-card">${title} <span class="faint caption">${list.length}</span></h3></div>
+    ${list.length ? list.slice(0, 12).map(mini).join('') : `<p class="faint caption" style="margin:0">${emptyMsg}</p>`}</div>`;
+  const spaces = S.spaces.map((s) => {
+    const ls = S.lists.filter((l) => l.space_id === s.id);
+    const ts = S.tasks.filter((t) => ls.some((l) => l.id === t.list_id) && !t.parent_id);
+    const d = ts.filter(isDone).length;
+    return { s, total: ts.length, done: d };
+  });
+  return `<div class="page-narrow">
+    <div class="greet"><h1 class="h-display">${hello}, ${esc(S.me.name.split(' ')[0])}</h1>
+      <p class="muted">${open.length ? `Você tem ${open.length} tarefa${open.length > 1 ? 's' : ''} em aberto${overdue.length ? `, ${overdue.length} atrasada${overdue.length > 1 ? 's' : ''}` : ''}.` : 'Nenhuma tarefa aberta com você agora.'}</p></div>
+    <div class="stats">
+      <div class="stat"><div class="caption muted">Em aberto</div><div class="v">${open.length}</div></div>
+      <div class="stat"><div class="caption muted">Atrasadas</div><div class="v" style="${overdue.length ? 'color:var(--danger)' : ''}">${overdue.length}</div></div>
+      <div class="stat"><div class="caption muted">Para hoje</div><div class="v">${due.length}</div></div>
+      <div class="stat"><div class="caption muted">Concluídas em 7 dias</div><div class="v">${doneWeek.length}</div></div>
+    </div>
+    <div class="home-grid">
+      <div>
+        ${overdue.length ? panel('Atrasadas', overdue, '') : ''}
+        ${panel('Hoje', due, 'Nada com prazo para hoje.')}
+        ${panel('Próximos 7 dias', upcoming, 'Nenhum prazo nesta semana.')}
+        ${nodate.length ? panel('Sem prazo', nodate, '') : ''}
+      </div>
+      <div>
+        <div class="panel"><div class="panel-head"><h3 class="h-card">Espaços</h3><button class="btn btn-text btn-sm" data-act="new-space">${icon('plus', 'sm')}Novo</button></div>
+          ${spaces.length ? spaces.map(({ s, total, done }) => `<a class="mini-task" href="#/espaco/${s.id}/${store.get('view:' + s.id, 'lista')}">
+            <span class="space-chip" style="background:${esc(s.color)}">${esc(initials(s.name)[0])}</span><span class="t" style="color:var(--text)">${esc(s.name)}</span>
+            <span class="where">${done}/${total}</span><span style="width:80px" class="progress"><i style="width:${total ? Math.round((done / total) * 100) : 0}%"></i></span></a>`).join('')
+            : `<p class="faint caption" style="margin:0">Crie um espaço para cada cliente, área ou projeto.</p><button class="btn btn-primary btn-sm" style="margin-top:12px" data-act="new-space">Criar espaço</button>`}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function inboxView(c) {
+  let items;
+  try { items = await api('GET', '/api/notifications'); } catch (e) { fail(e); return; }
+  if (S.route.name !== 'entrada') return;
+  const onlyUnread = store.get('inboxUnread', false);
+  const shown = onlyUnread ? items.filter((n) => !n.read) : items;
+  c.innerHTML = `<div class="page-narrow" style="max-width:820px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px;flex-wrap:wrap"><h1 class="h-display" style="flex:1">Caixa de entrada</h1>
+      <div class="tabs"><button class="tab ${onlyUnread ? '' : 'on'}" data-act="inbox-filter" data-v="0">Todas</button><button class="tab ${onlyUnread ? 'on' : ''}" data-act="inbox-filter" data-v="1">Não lidas</button></div>
+      <button class="btn btn-ghost btn-sm" data-act="read-all" ${items.some((n) => !n.read) ? '' : 'disabled'}>Marcar todas como lidas</button></div>
+    ${shown.length ? shown.map((n) => {
+      const a = userById(n.actor_id);
+      return `<div class="notif ${n.read ? '' : 'unread'}" data-notif="${n.id}" data-task-id="${esc(n.task_id || '')}">${avatar(a, 'md')}
+        <div class="body"><div><b style="font-weight:480">${esc(a?.name || 'Alguém')}</b> <span class="muted">${esc(n.text)}</span></div></div>
+        <span class="when">${timeAgo(n.created_at)}</span></div>`;
+    }).join('') : `<div class="empty"><div class="h-card">Tudo em dia</div><p>Atribuições, menções e comentários nas suas tarefas aparecem aqui.</p></div>`}
+  </div>`;
+}
+
+function membersView() {
+  const isAdmin = S.me.role === 'admin';
+  return `<div class="page-narrow" style="max-width:820px">
+    <h1 class="h-display" style="margin-bottom:8px">Equipe</h1>
+    <p class="muted" style="margin:0 0 24px">Todos com conta veem os mesmos espaços. Para alguém entrar, basta criar a conta na tela de login${S.config.registrationCode ? ' com o código de convite' : ''}.</p>
+    <div class="panel">${S.users.map((u) => `<div class="member" style="${u.active ? '' : 'opacity:.5'}">${avatar(u, 'md')}
+      <div class="who"><div>${esc(u.name)}${u.id === S.me.id ? ' <span class="faint">(você)</span>' : ''}</div><div class="caption faint">${esc(u.email)}</div></div>
+      <span class="role-badge">${u.role === 'admin' ? 'Administrador' : 'Membro'}${u.active ? '' : ' · desativado'}</span>
+      ${isAdmin && u.id !== S.me.id ? `<button class="icon-btn" data-act="member-menu" data-id="${u.id}" aria-label="Opções">${icon('more', 'sm')}</button>` : ''}
+    </div>`).join('')}</div>
+  </div>`;
+}
+
+const SWATCHES = ['#7d8ce0', '#5fae8f', '#c9a55c', '#9b87d9', '#d98a8a', '#6fb3c4', '#b58ac9', '#a3a86b', '#8a9bb0', '#c98f6b'];
+function profileView() {
+  return `<div class="page-narrow" style="max-width:640px">
+    <h1 class="h-display" style="margin-bottom:24px">Seu perfil</h1>
+    <form class="panel" data-form="profile" style="display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;align-items:center;gap:16px">${avatar(S.me, 'lg')}<div><div class="h-card">${esc(S.me.name)}</div><div class="caption faint">${esc(S.me.email)}</div></div></div>
+      <div class="field"><label for="p-name">Nome</label><input class="input" id="p-name" name="name" value="${esc(S.me.name)}"></div>
+      <div class="field"><label>Cor do avatar</label><div class="swatches">${SWATCHES.map((c) => `<button type="button" class="swatch ${c === S.me.color ? 'on' : ''}" data-color="${c}" style="background:${c}" aria-label="Cor ${c}"></button>`).join('')}</div></div>
+      <div><button class="btn btn-primary" type="submit">Salvar</button></div>
+    </form>
+    <form class="panel" data-form="password" style="display:flex;flex-direction:column;gap:16px">
+      <h2 class="h-card">Trocar senha</h2>
+      <div class="field"><label for="p-cur">Senha atual</label><input class="input" id="p-cur" name="currentPassword" type="password" autocomplete="current-password"></div>
+      <div class="field"><label for="p-new">Nova senha</label><input class="input" id="p-new" name="newPassword" type="password" autocomplete="new-password" minlength="8"></div>
+      <div><button class="btn btn-ghost" type="submit">Atualizar senha</button></div>
+    </form>
+  </div>`;
+}
+function bindProfile(c) {
+  let color = S.me.color;
+  c.querySelectorAll('[data-color]').forEach((b) => b.addEventListener('click', () => {
+    color = b.dataset.color;
+    c.querySelectorAll('[data-color]').forEach((x) => x.classList.toggle('on', x === b));
+  }));
+  c.querySelector('[data-form=profile]').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const { user } = await api('PATCH', '/api/me', { name: e.target.name.value, color });
+      S.me = user; await loadBootstrap(); renderSidebar(); renderContent(); toast('Perfil atualizado');
+    } catch (ex) { fail(ex); }
+  });
+  c.querySelector('[data-form=password]').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api('PATCH', '/api/me', { currentPassword: e.target.currentPassword.value, newPassword: e.target.newPassword.value });
+      e.target.reset(); toast('Senha atualizada');
+    } catch (ex) { fail(ex); }
+  });
+}
+
+// ---------- ações ----------
+const taskOf = (id) => S.tasks.find((t) => t.id === id);
+
+function newSpaceDialog(space) {
+  let color = space?.color || SWATCHES[S.spaces.length % SWATCHES.length];
+  dialog(`<h2 class="h-section">${space ? 'Editar espaço' : 'Novo espaço'}</h2>
+    <p class="muted" style="margin:0">${space ? '' : 'Um espaço agrupa listas: por exemplo, um cliente, uma campanha ou uma área.'}</p>
+    <form style="display:flex;flex-direction:column;gap:16px">
+      <div class="field"><label for="s-name">Nome</label><input class="input" id="s-name" name="name" value="${esc(space?.name || '')}" placeholder="Ex.: Cliente Acme" required></div>
+      <div class="field"><label>Cor</label><div class="swatches">${SWATCHES.map((c) => `<button type="button" class="swatch ${c === color ? 'on' : ''}" data-color="${c}" style="background:${c}" aria-label="Cor"></button>`).join('')}</div></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-text" data-close>Cancelar</button><button class="btn btn-primary" type="submit">${space ? 'Salvar' : 'Criar espaço'}</button></div>
+    </form>`, (m, close) => {
+    m.querySelectorAll('[data-color]').forEach((b) => b.addEventListener('click', () => { color = b.dataset.color; m.querySelectorAll('[data-color]').forEach((x) => x.classList.toggle('on', x === b)); }));
+    m.querySelector('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = e.target.name.value.trim();
+      if (!name) return;
+      try {
+        if (space) await api('PATCH', `/api/spaces/${space.id}`, { name, color });
+        else { const s = await api('POST', '/api/spaces', { name, color }); await loadBootstrap(); close(); go(`#/espaco/${s.id}/lista`); renderSidebar(); return; }
+        await loadBootstrap(); renderSidebar(); renderTop(); close();
+      } catch (ex) { fail(ex); }
+    });
+  });
+}
+
+function newListDialog(spaceId, list) {
+  dialog(`<h2 class="h-section">${list ? 'Renomear lista' : 'Nova lista'}</h2>
+    <form style="display:flex;flex-direction:column;gap:16px">
+      <div class="field"><label for="l-name">Nome</label><input class="input" id="l-name" name="name" value="${esc(list?.name || '')}" placeholder="Ex.: Social media, Campanha de Natal" required></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-text" data-close>Cancelar</button><button class="btn btn-primary" type="submit">${list ? 'Salvar' : 'Criar lista'}</button></div>
+    </form>`, (m, close) => {
+    m.querySelector('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = e.target.name.value.trim();
+      if (!name) return;
+      try {
+        if (list) { await api('PATCH', `/api/lists/${list.id}`, { name }); await loadBootstrap(); renderSidebar(); renderTop(); close(); return; }
+        const l = await api('POST', '/api/lists', { space_id: spaceId, name });
+        collapsedSpaces.delete(spaceId);
+        await loadBootstrap(); close(); go(`#/lista/${l.id}/lista`);
+      } catch (ex) { fail(ex); }
+    });
+  });
+}
+
+function statusesDialog(list) {
+  let sts = list.statuses.map((s) => ({ ...s }));
+  dialog(`<h2 class="h-section">Status de “${esc(list.name)}”</h2>
+    <p class="muted caption" style="margin:0">Defina as etapas do fluxo. Tarefas em um status removido voltam para o primeiro.</p>
+    <div data-sts></div>
+    <button class="btn btn-text btn-sm" style="align-self:flex-start" data-add>${icon('plus', 'sm')}Adicionar status</button>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-text" data-close>Cancelar</button><button class="btn btn-primary" data-save>Salvar</button></div>`, (m, close) => {
+    const box = m.querySelector('[data-sts]');
+    const draw = () => {
+      box.innerHTML = sts.map((s, i) => `<div class="status-edit" data-i="${i}">
+        <input type="color" value="${esc(s.color)}" data-k="color" aria-label="Cor">
+        <input class="input" value="${esc(s.name)}" data-k="name" aria-label="Nome">
+        <select class="select" data-k="type" aria-label="Tipo"><option value="open" ${s.type === 'open' ? 'selected' : ''}>Não iniciado</option><option value="active" ${s.type === 'active' ? 'selected' : ''}>Em andamento</option><option value="done" ${s.type === 'done' ? 'selected' : ''}>Concluído</option></select>
+        <button class="icon-btn" data-up aria-label="Subir">${icon('chevron', 'sm')}</button>
+        <button class="icon-btn" data-del aria-label="Remover">${icon('trash', 'sm')}</button></div>`).join('');
+    };
+    draw();
+    box.addEventListener('input', (e) => { const row = e.target.closest('[data-i]'); if (row) sts[row.dataset.i][e.target.dataset.k] = e.target.value; });
+    box.addEventListener('change', (e) => { const row = e.target.closest('[data-i]'); if (row) sts[row.dataset.i][e.target.dataset.k] = e.target.value; });
+    box.addEventListener('click', (e) => {
+      const row = e.target.closest('[data-i]'); if (!row) return;
+      const i = +row.dataset.i;
+      if (e.target.closest('[data-del]')) { if (sts.length > 1) sts.splice(i, 1); draw(); }
+      if (e.target.closest('[data-up]') && i > 0) { [sts[i - 1], sts[i]] = [sts[i], sts[i - 1]]; draw(); }
+    });
+    m.querySelector('[data-add]').addEventListener('click', () => { sts.splice(sts.length - 1, 0, { id: 's' + Date.now().toString(36), name: 'Novo status', color: '#8a9bb0', type: 'active' }); draw(); });
+    m.querySelector('[data-save]').addEventListener('click', async () => {
+      try { await api('PATCH', `/api/lists/${list.id}`, { statuses: sts }); await loadBootstrap(); await loadTasks(); renderContent(); close(); toast('Status atualizados'); } catch (ex) { fail(ex); }
+    });
+  });
+}
+
+export function newTaskDialog(preset = {}) {
+  const def = preset.list_id ? listById(preset.list_id) : defaultListForView() || S.lists[0];
+  if (!def) { toast('Crie um espaço e uma lista primeiro'); newSpaceDialog(); return; }
+  const opts = S.spaces.map((s) => {
+    const ls = S.lists.filter((l) => l.space_id === s.id);
+    return ls.length ? `<optgroup label="${esc(s.name)}">${ls.map((l) => `<option value="${l.id}" ${l.id === def.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</optgroup>` : '';
+  }).join('');
+  dialog(`<h2 class="h-section">Nova tarefa</h2>
+    <form style="display:flex;flex-direction:column;gap:16px">
+      <div class="field"><label for="t-title">Título</label><input class="input" id="t-title" name="title" required placeholder="Ex.: Key visual da campanha"></div>
+      <div class="field"><label for="t-list">Lista</label><select class="select input" id="t-list" name="list_id">${opts}</select></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="field"><label for="t-due">Prazo</label><input class="input" id="t-due" name="due_date" type="date" style="color-scheme:dark" value="${esc(preset.due_date || '')}"></div>
+        <div class="field"><label for="t-prio">Prioridade</label><select class="select input" id="t-prio" name="priority"><option value="">Sem prioridade</option>${Object.entries(PRIORITY).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('')}</select></div>
+      </div>
+      <label style="display:flex;gap:10px;align-items:center" class="muted"><input type="checkbox" class="check" name="mine" ${S.route.name === 'minhas' || preset.mine ? 'checked' : ''}> Atribuir a mim</label>
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-text" data-close>Cancelar</button><button class="btn btn-primary" type="submit">Criar tarefa</button></div>
+    </form>`, (m, close) => {
+    m.querySelector('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      if (!f.title.value.trim()) return;
+      try {
+        const t = await createTask({ title: f.title.value, list_id: f.list_id.value, due_date: f.due_date.value || null, priority: f.priority.value || null, assignees: f.mine.checked ? [S.me.id] : [], status: preset.status });
+        close();
+        go(taskHash(t.id));
+      } catch (ex) { fail(ex); }
+    });
+  });
+}
+
+export function taskMenu(anchor, task, { inModal = false } = {}) {
+  menuPopover(anchor, {
+    items: () => [
+      { id: 'open', text: 'abrir', html: `${icon('eye', 'sm')}Abrir` },
+      { id: 'copy', text: 'copiar', html: `${icon('link', 'sm')}Copiar link` },
+      { id: 'move', text: 'mover', html: `${icon('move', 'sm')}Mover para outra lista` },
+      { id: 'archive', text: 'arquivar', html: `${icon('archive', 'sm')}Arquivar` },
+      { sep: true },
+      { id: 'delete', text: 'excluir', danger: true, html: `${icon('trash', 'sm')}Excluir` },
+    ].filter((x) => !(inModal && x.id === 'open')),
+    onPick: async (id) => {
+      if (id === 'open') go(taskHash(task.id));
+      if (id === 'copy') { await navigator.clipboard?.writeText(location.origin + '/' + routeHash() + '?tarefa=' + task.id).catch(() => {}); toast('Link copiado'); }
+      if (id === 'move') setTimeout(() => moveTaskPopover(anchor, task), 0);
+      if (id === 'archive') {
+        await patchTask(task.id, { archived: true });
+        S.tasks = S.tasks.filter((t) => t.id !== task.id); renderContent();
+        if (inModal) closeTask();
+        toast('Tarefa arquivada', { action: 'Desfazer', onAction: async () => { await api('PATCH', `/api/tasks/${task.id}`, { archived: false }); await loadTasks(); renderContent(); } });
+      }
+      if (id === 'delete') {
+        if (!(await confirmDialog('Excluir tarefa?', `“${task.title}” e suas subtarefas, comentários e anexos serão apagados para sempre.`, { ok: 'Excluir', danger: true }))) return;
+        try { await api('DELETE', `/api/tasks/${task.id}`); S.tasks = S.tasks.filter((t) => t.id !== task.id && t.parent_id !== task.id); renderContent(); if (inModal) closeTask(); toast('Tarefa excluída'); } catch (e) { fail(e); }
+      }
+    },
+  });
+}
+function moveTaskPopover(anchor, task) {
+  menuPopover(anchor, {
+    search: true, width: 280,
+    items: () => S.spaces.flatMap((s) => {
+      const ls = S.lists.filter((l) => l.space_id === s.id);
+      return ls.length ? [{ label: s.name }, ...ls.map((l) => ({ id: l.id, text: s.name + ' ' + l.name, selected: l.id === task.list_id, html: `<span class="dot" style="color:${esc(s.color)}"></span>${esc(l.name)}` }))] : [];
+    }),
+    onPick: async (id) => {
+      if (id === task.list_id) return;
+      await patchTask(task.id, { list_id: id });
+      const r = S.route;
+      if (r.name === 'lista' && r.id !== id) { S.tasks = S.tasks.filter((t) => t.id !== task.id); renderContent(); }
+      toast('Tarefa movida para ' + listById(id).name);
+    },
+  });
+}
+
+function openPalette() {
+  if (document.querySelector('.palette')) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'palette';
+  wrap.innerHTML = `<div class="palette-box" role="dialog" aria-label="Buscar"><input class="input" placeholder="Buscar tarefas, listas e espaços…" aria-label="Buscar"><div class="palette-results"></div></div>`;
+  document.body.append(wrap);
+  const input = wrap.querySelector('input'), res = wrap.querySelector('.palette-results');
+  let items = [], active = 0, seq = 0;
+  const close = () => wrap.remove();
+  const draw = () => {
+    res.innerHTML = items.length ? items.map((it, i) => `<a class="menu-item ${i === active ? 'active' : ''}" href="${it.href}" data-i="${i}">${it.html}</a>`).join('')
+      : `<div class="empty" style="padding:24px">${input.value ? 'Nada encontrado' : 'Digite para buscar'}</div>`;
+  };
+  const search = async () => {
+    const q = input.value.trim().toLowerCase();
+    const my = ++seq;
+    const local = [
+      ...S.spaces.filter((s) => !q || s.name.toLowerCase().includes(q)).map((s) => ({ href: `#/espaco/${s.id}/lista`, html: `<span class="space-chip" style="background:${esc(s.color)}">${esc(initials(s.name)[0])}</span>${esc(s.name)}<span class="faint caption" style="margin-left:auto">Espaço</span>` })),
+      ...S.lists.filter((l) => !q || l.name.toLowerCase().includes(q)).map((l) => ({ href: `#/lista/${l.id}/lista`, html: `${icon('list', 'sm')}${esc(l.name)}<span class="faint caption" style="margin-left:auto">${esc(spaceById(l.space_id)?.name || '')}</span>` })),
+    ].slice(0, q ? 6 : 8);
+    items = local; active = 0; draw();
+    if (!q) return;
+    try {
+      const tasks = await api('GET', '/api/tasks?limit=30&q=' + encodeURIComponent(q));
+      if (my !== seq) return;
+      items = [...tasks.map((t) => ({ href: routeHash() + '?tarefa=' + t.id, html: `${statusPill(statusOf(t))}<span class="ellipsis">${esc(t.title)}</span><span class="faint caption" style="margin-left:auto;white-space:nowrap">${esc(listById(t.list_id)?.name || '')}</span>` })), ...local];
+      draw();
+    } catch { /* ignora */ }
+  };
+  let timer;
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 150); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') close();
+    if (e.key === 'ArrowDown') { active = Math.min(items.length - 1, active + 1); draw(); e.preventDefault(); }
+    if (e.key === 'ArrowUp') { active = Math.max(0, active - 1); draw(); e.preventDefault(); }
+    if (e.key === 'Enter' && items[active]) { location.hash = items[active].href; close(); }
+  });
+  res.addEventListener('click', (e) => { if (e.target.closest('a')) close(); });
+  wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); });
+  input.focus();
+  search();
+}
+
+const ACTIONS = {
+  nav: () => document.querySelector('.app').classList.toggle('nav-open'),
+  palette: openPalette,
+  'new-space': () => newSpaceDialog(),
+  'new-list': (el) => newListDialog(el.dataset.id),
+  'new-task': () => newTaskDialog(),
+  'toggle-space': (el) => {
+    const id = el.dataset.id;
+    collapsedSpaces.has(id) ? collapsedSpaces.delete(id) : collapsedSpaces.add(id);
+    store.set('collapsedSpaces', [...collapsedSpaces]);
+    el.closest('.space').classList.toggle('collapsed');
+  },
+  'toggle-group': (el) => {
+    const k = el.dataset.key;
+    collapsedGroups.has(k) ? collapsedGroups.delete(k) : collapsedGroups.add(k);
+    el.closest('.group').classList.toggle('collapsed');
+  },
+  'space-menu': (el) => {
+    const s = spaceById(el.dataset.id);
+    menuPopover(el, {
+      items: () => [
+        { id: 'new-list', text: '', html: `${icon('plus', 'sm')}Nova lista` },
+        { id: 'edit', text: '', html: `${icon('edit', 'sm')}Editar espaço` },
+        ...(S.me.role === 'admin' ? [{ sep: true }, { id: 'delete', danger: true, html: `${icon('trash', 'sm')}Excluir espaço` }] : []),
+      ],
+      onPick: async (id) => {
+        if (id === 'new-list') newListDialog(s.id);
+        if (id === 'edit') newSpaceDialog(s);
+        if (id === 'delete' && await confirmDialog('Excluir espaço?', `“${s.name}” e todas as suas listas deixarão de aparecer para a equipe.`, { ok: 'Excluir', danger: true })) {
+          try { await api('DELETE', `/api/spaces/${s.id}`); await loadBootstrap(); if (S.route.id === s.id || listById(S.route.id) === undefined) go('#/inicio'); renderSidebar(); renderContent(); } catch (e) { fail(e); }
+        }
+      },
+    });
+  },
+  'list-menu': (el) => {
+    const l = listById(el.dataset.id);
+    const fav = S.favorites.includes(l.id);
+    menuPopover(el, {
+      items: () => [
+        { id: 'fav', html: `${icon('star', 'sm')}${fav ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}` },
+        { id: 'rename', html: `${icon('edit', 'sm')}Renomear` },
+        { id: 'statuses', html: `${icon('settings', 'sm')}Editar status` },
+        { sep: true },
+        { id: 'delete', danger: true, html: `${icon('trash', 'sm')}Excluir lista` },
+      ],
+      onPick: async (id) => {
+        if (id === 'fav') ACTIONS.fav({ dataset: { id: l.id } });
+        if (id === 'rename') newListDialog(l.space_id, l);
+        if (id === 'statuses') statusesDialog(l);
+        if (id === 'delete' && await confirmDialog('Excluir lista?', `“${l.name}” e suas tarefas deixarão de aparecer.`, { ok: 'Excluir', danger: true })) {
+          try { await api('DELETE', `/api/lists/${l.id}`); await loadBootstrap(); if (S.route.id === l.id) go('#/inicio'); renderSidebar(); } catch (e) { fail(e); }
+        }
+      },
+    });
+  },
+  fav: async (el) => {
+    try {
+      const { favorite } = await api('POST', `/api/lists/${el.dataset.id}/favorite`);
+      S.favorites = favorite ? [...S.favorites, el.dataset.id] : S.favorites.filter((x) => x !== el.dataset.id);
+      renderSidebar(); renderTop();
+    } catch (e) { fail(e); }
+  },
+  'me-menu': (el) => menuPopover(el, {
+    items: () => [
+      { id: 'profile', html: `${icon('user', 'sm')}Meu perfil` },
+      { id: 'team', html: `${icon('users', 'sm')}Equipe` },
+      { sep: true },
+      { id: 'logout', html: `${icon('logout', 'sm')}Sair` },
+    ],
+    onPick: async (id) => {
+      if (id === 'profile') go('#/perfil');
+      if (id === 'team') go('#/membros');
+      if (id === 'logout') { await api('POST', '/api/auth/logout').catch(() => {}); location.hash = ''; location.reload(); }
+    },
+  }),
+  'member-menu': (el) => {
+    const u = userById(el.dataset.id);
+    menuPopover(el, {
+      items: () => [
+        { id: 'role', html: u.role === 'admin' ? 'Tornar membro' : 'Tornar administrador' },
+        { id: 'active', danger: u.active, html: u.active ? 'Desativar acesso' : 'Reativar acesso' },
+      ],
+      onPick: async (id) => {
+        try {
+          if (id === 'role') await api('PATCH', `/api/users/${u.id}`, { role: u.role === 'admin' ? 'member' : 'admin' });
+          if (id === 'active') await api('PATCH', `/api/users/${u.id}`, { active: !u.active });
+          await loadBootstrap(); renderContent();
+        } catch (e) { fail(e); }
+      },
+    });
+  },
+  'toggle-done-task': (el) => { const t = taskOf(el.dataset.id); if (t) toggleDone(t).catch(() => {}); },
+  status: (el) => { const t = taskOf(el.dataset.id); if (t) pickStatus(el, t); },
+  priority: (el) => { const t = taskOf(el.dataset.id); if (t) pickPriority(el, t); },
+  assignees: (el) => { const t = taskOf(el.dataset.id); if (t) pickAssignees(el, t); },
+  'task-menu': (el) => { const t = taskOf(el.dataset.id); if (t) taskMenu(el, t); },
+  'filter-assignee': (el) => menuPopover(el, {
+    search: true, multi: true,
+    items: () => [{ id: S.me.id, text: 'eu ' + S.me.name, selected: S.filters.assignees.includes(S.me.id), html: `${avatar(S.me)}Eu` },
+      ...S.users.filter((u) => u.id !== S.me.id && u.active).map((u) => ({ id: u.id, text: u.name, selected: S.filters.assignees.includes(u.id), html: `${avatar(u)}<span class="ellipsis">${esc(u.name)}</span>` })),
+      { id: '__none', text: 'sem responsável', selected: S.filters.assignees.includes('__none'), html: `<span class="avatar-empty">${icon('user', 'sm')}</span>Sem responsável` }],
+    onPick: (id) => { const a = S.filters.assignees; S.filters.assignees = a.includes(id) ? a.filter((x) => x !== id) : [...a, id]; renderTop(); renderContent(); },
+  }),
+  'filter-priority': (el) => menuPopover(el, {
+    multi: true,
+    items: () => [...Object.entries(PRIORITY).map(([k]) => ({ id: k, selected: S.filters.priorities.includes(k), html: prioHtml(k) })),
+      { id: '__none', selected: S.filters.priorities.includes('__none'), html: '<span class="muted">Sem prioridade</span>' }],
+    onPick: (id) => { const a = S.filters.priorities; S.filters.priorities = a.includes(id) ? a.filter((x) => x !== id) : [...a, id]; renderTop(); renderContent(); },
+  }),
+  sort: (el) => menuPopover(el, {
+    items: () => Object.entries({ manual: 'Ordem manual', due: 'Prazo', priority: 'Prioridade', title: 'Nome', created: 'Mais recentes' }).map(([k, v]) => ({ id: k, selected: S.filters.sort === k, html: v })),
+    onPick: (id) => { S.filters.sort = id; renderTop(); renderContent(); },
+  }),
+  'toggle-done': () => { S.filters.showDone = !S.filters.showDone; renderTop(); renderContent(); },
+  'cal-prev': () => { S.calMonth = new Date(S.calMonth.getFullYear(), S.calMonth.getMonth() - 1, 1); renderContent(); },
+  'cal-next': () => { S.calMonth = new Date(S.calMonth.getFullYear(), S.calMonth.getMonth() + 1, 1); renderContent(); },
+  'cal-today': () => { const d = new Date(); S.calMonth = new Date(d.getFullYear(), d.getMonth(), 1); renderContent(); },
+  'cal-add': (el) => {
+    const date = el.dataset.date;
+    const list = S.route.name === 'minhas' ? null : defaultListForView();
+    if (!list) { newTaskDialog({ due_date: date, mine: true }); return; }
+    openPopover(el, (p) => {
+      p.innerHTML = `<div class="pop-search"><input class="input input-sm" placeholder="Nova tarefa em ${esc(fmtDate(date))}"></div>`;
+      const inp = p.querySelector('input');
+      inp.addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter' || !inp.value.trim()) return;
+        try { await createTask({ title: inp.value, list_id: list.id, due_date: date }); closePopover(); } catch (ex) { fail(ex); }
+      });
+    }, { width: 260 });
+  },
+  'cal-more': (el) => {
+    const date = el.dataset.date;
+    const list = filtered(S.tasks).filter((t) => t.due_date === date);
+    menuPopover(el, { items: () => list.map((t) => ({ id: t.id, html: `${statusPill(statusOf(t))}<span class="ellipsis">${esc(t.title)}</span>` })), onPick: (id) => go(taskHash(id)) });
+  },
+  'inbox-filter': (el) => { store.set('inboxUnread', el.dataset.v === '1'); renderContent(); },
+  'read-all': async () => { await api('POST', '/api/notifications/read', {}); S.unread = 0; renderSidebar(); renderContent(); },
+};
+
+function bindGlobal() {
+  document.addEventListener('click', (e) => {
+    const act = e.target.closest('[data-act]');
+    if (act && document.getElementById('root').contains(act)) {
+      if (act.tagName !== 'INPUT') e.preventDefault();
+      ACTIONS[act.dataset.act]?.(act, e);
+      return;
+    }
+    const n = e.target.closest('[data-notif]');
+    if (n) {
+      api('POST', '/api/notifications/read', { id: n.dataset.notif }).then(() => { S.unread = Math.max(0, S.unread - (n.classList.contains('unread') ? 1 : 0)); renderSidebar(); n.classList.remove('unread'); }).catch(() => {});
+      if (n.dataset.taskId) go('#/entrada?tarefa=' + n.dataset.taskId);
+      return;
+    }
+    if (e.target.closest('[data-stop], a, input, button, label')) return;
+    const t = e.target.closest('[data-task]');
+    if (t && document.querySelector('.content')?.contains(t)) go(taskHash(t.dataset.task));
+  });
+  document.addEventListener('change', (e) => {
+    const d = e.target.closest('.content [data-date-field]');
+    if (d) patchTask(d.dataset.id, { [d.dataset.dateField]: d.value || null }).catch(() => {});
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target.matches('[data-filter-q]')) { S.filters.q = e.target.value; renderContent(); }
+  });
+  document.addEventListener('keydown', async (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
+    const qa = e.target.closest?.('[data-quick-add]');
+    if (qa && e.key === 'Enter' && qa.value.trim()) {
+      const list = defaultListForView();
+      if (!list) return;
+      const title = qa.value; qa.value = '';
+      const status = list.statuses.some((s) => s.id === qa.dataset.quickAdd) ? qa.dataset.quickAdd : undefined;
+      try {
+        await createTask({ title, list_id: list.id, status });
+        document.querySelector(`[data-quick-add="${CSS.escape(qa.dataset.quickAdd)}"]`)?.focus();
+      } catch (ex) { fail(ex); qa.value = title; }
+    }
+    if (qa && e.key === 'Escape') { qa.value = ''; qa.blur(); }
+  });
+  // Atalhos de teclado para o seletor de data: clicar no rótulo abre o calendário nativo
+  document.addEventListener('click', (e) => {
+    const lbl = e.target.closest('.content label.cell-btn');
+    const inp = lbl?.querySelector('input[type=date]');
+    if (inp) { e.preventDefault(); try { inp.showPicker(); } catch { inp.focus(); } }
+  });
+  bindDnd();
+}
+
+// ---------- arrastar e soltar ----------
+function bindDnd() {
+  let dragId = null;
+  const clear = () => document.querySelectorAll('.drop, .drop-before').forEach((x) => x.classList.remove('drop', 'drop-before'));
+  document.addEventListener('dragstart', (e) => {
+    const el = e.target.closest?.('[data-drag]');
+    if (!el) return;
+    dragId = el.dataset.drag;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', dragId);
+    requestAnimationFrame(() => el.classList.add('dragging'));
+  });
+  document.addEventListener('dragend', (e) => { e.target.closest?.('[data-drag]')?.classList.remove('dragging'); clear(); dragId = null; });
+  document.addEventListener('dragover', (e) => {
+    if (!dragId) return;
+    const zone = e.target.closest('[data-drop-status], [data-drop-date]');
+    if (!zone) return;
+    e.preventDefault();
+    clear();
+    zone.classList.add('drop');
+    const over = e.target.closest('[data-drag]');
+    if (over && over.dataset.drag !== dragId && zone.dataset.dropStatus) {
+      const r = over.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      const target = after ? over.nextElementSibling?.matches('[data-drag]') ? over.nextElementSibling : null : over;
+      if (target) target.classList.add('drop-before');
+      zone.dataset.before = target ? target.dataset.drag : '';
+    } else if (zone.dataset.dropStatus && !over) zone.dataset.before = '';
+  });
+  document.addEventListener('drop', async (e) => {
+    const zone = e.target.closest('[data-drop-status], [data-drop-date]');
+    if (!zone || !dragId) return;
+    e.preventDefault();
+    const task = taskOf(dragId);
+    clear();
+    if (!task) return;
+    if (zone.dataset.dropDate) {
+      if (task.due_date !== zone.dataset.dropDate) patchTask(task.id, { due_date: zone.dataset.dropDate }).catch(() => {});
+      return;
+    }
+    let status = zone.dataset.dropStatus;
+    const l = listById(task.list_id);
+    if (!l.statuses.some((s) => s.id === status)) {
+      const name = viewStatuses(S.tasks).find((s) => s.id === status)?.name;
+      const match = l.statuses.find((s) => s.name.toLowerCase() === name?.toLowerCase());
+      if (!match) { toast(`A lista “${l.name}” não tem o status “${name}”`, { error: true }); return; }
+      status = match.id;
+    }
+    const patch = {};
+    if (status !== task.status) patch.status = status;
+    if (S.filters.sort === 'manual') {
+      const col = filtered(S.tasks).filter((t) => t.status === zone.dataset.dropStatus && t.id !== task.id);
+      const beforeId = zone.dataset.before;
+      const idx = beforeId ? col.findIndex((t) => t.id === beforeId) : col.length;
+      const prev = col[idx - 1], next = col[idx];
+      const pos = prev && next ? (prev.position + next.position) / 2 : prev ? prev.position + 1000 : next ? next.position - 1000 : 1000;
+      if (pos !== task.position) patch.position = pos;
+    }
+    if (Object.keys(patch).length) patchTask(task.id, patch).catch(() => {});
+  });
+}
+
+// ---------- tempo real ----------
+let es, refreshTimer, structureTimer;
+function connectEvents() {
+  es?.close();
+  es = new EventSource('/api/events');
+  es.onmessage = (m) => {
+    let ev; try { ev = JSON.parse(m.data); } catch { return; }
+    if (ev.type === 'tasks') {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(async () => {
+        if (S.route.name === 'entrada' || S.route.name === 'membros' || S.route.name === 'perfil') { /* nada */ }
+        else if (!document.querySelector('.content [data-quick-add]:focus, .content [data-filter-q]:focus, .dragging')) { try { await loadTasks(); renderContent(); } catch { /* offline */ } }
+        if (ev.task_id && currentTaskId() && !taskIsBusy()) refreshTask();
+      }, 350);
+    }
+    if (ev.type === 'structure' || ev.type === 'users') {
+      clearTimeout(structureTimer);
+      structureTimer = setTimeout(async () => { try { await loadBootstrap(); renderSidebar(); renderTop(); if (S.route.name === 'membros') renderContent(); } catch { /* offline */ } }, 300);
+    }
+    if (ev.type === 'notification' && ev.users.includes(S.me?.id)) {
+      api('GET', '/api/bootstrap').then((b) => { S.unread = b.unread; renderSidebar(); if (S.route.name === 'entrada') renderContent(); }).catch(() => {});
+    }
+  };
+}
+
+// ---------- inicialização ----------
+async function boot() {
+  try { S.config = await api('GET', '/api/config'); } catch { S.config = {}; }
+  try { await loadBootstrap(); } catch (e) {
+    if (e.status === 401) { renderAuth(); return; }
+    document.getElementById('root').innerHTML = `<div class="empty"><div class="h-card">Não foi possível conectar</div><p>${esc(e.message)}</p></div>`;
+    return;
+  }
+  S.shellRendered = false;
+  document.getElementById('root').innerHTML = '';
+  if (!bootedOnce) { bindGlobal(); bootedOnce = true; }
+  connectEvents();
+  await onRoute();
+}
+let bootedOnce = false;
+setUnauthorizedHandler(() => { es?.close(); closePopover(); closeTask(false); renderAuth(); });
+window.addEventListener('hashchange', () => { if (S.me) onRoute(); });
+void popoverOpen;
+boot();

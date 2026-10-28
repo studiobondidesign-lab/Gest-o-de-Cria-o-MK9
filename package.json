@@ -1,0 +1,14 @@
+{
+  "name": "mk9-tarefas",
+  "version": "1.0.0",
+  "description": "Gestão de tarefas da Criação MK9 (estilo ClickUp)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "dev": "node --no-warnings --watch server.js"
+  },
+  "engines": { "node": ">=22.5" },
+  "license": "UNLICENSED",
+  "private": true
+}
