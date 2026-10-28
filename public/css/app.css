@@ -626,3 +626,111 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 @media (hover: hover) { .show-more:hover { color: var(--text); background: color-mix(in srgb, var(--surface-2) 60%, transparent); } }
 .show-more:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tl-body .show-more { position: sticky; left: 0; width: var(--name-w); padding-left: 16px; border-top: 0; border-bottom: 1px solid var(--hairline); background: var(--surface-1); }
+
+/* ---------- Celular e tablet ----------
+   Tablet em pé (até 860px): a lista perde só prioridade e menu; o status continua à vista.
+   Celular (até 640px): a barra vira duas faixas que rolam de lado, a linha da tarefa ganha uma segunda linha
+   com status, prazo e prioridade, o quadro mostra uma coluna por vez e o calendário vira mês compacto + agenda do dia. */
+.filters { display: contents; }
+
+@media (max-width: 860px) and (min-width: 641px) {
+  .row { grid-template-columns: minmax(0, 1fr) auto 110px 160px; }
+  .row > :nth-child(3), .row > :nth-child(5) { display: block; }
+}
+
+@media (max-width: 640px) {
+  .toolbar { flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: 8px; padding: 8px 16px 10px; }
+  .toolbar .spacer { display: none; }
+  .tabs { overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar, .filters::-webkit-scrollbar { display: none; }
+  .tab { flex: 1 0 auto; justify-content: center; padding: 0 10px; white-space: nowrap; }
+  .filters {
+    display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain;
+    margin: 0 -16px; padding: 0 16px; scroll-padding-inline: 16px;
+    mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 24px), transparent 100%);
+  }
+  .filters > * { flex: none; white-space: nowrap; }
+  .filter-search input { width: 150px; }
+
+  /* Linha da tarefa em duas linhas */
+  .row { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "title title title who" "status due prio ."; gap: 2px 8px; padding: 10px 12px; }
+  .row > .title-cell { grid-area: title; align-items: flex-start; }
+  .row > :nth-child(2) { grid-area: who; align-self: start; }
+  .row > :nth-child(3) { grid-area: due; display: block; }
+  .row > :nth-child(4) { grid-area: prio; display: block; }
+  .row > :nth-child(5) { grid-area: status; display: block; margin-left: 26px; }
+  .row .title-cell .t { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.35; }
+  .row .title-cell .check { margin-top: 2px; }
+  .row .meta-icons, .row .row-tags, .row .sub-of { display: none; }
+  .row .cell-btn { min-height: 32px; }
+  .row .prio { font-size: 0; gap: 0; }
+  .row .cell-btn:has(> .faint) { display: none; }
+
+  /* Quadro: uma coluna por vez, com a próxima aparecendo na borda */
+  .board { overflow-x: auto; scroll-snap-type: x mandatory; scroll-padding-inline: 16px; overscroll-behavior-x: contain; gap: 12px; }
+  .column { width: calc(100vw - 64px); max-width: 360px; max-height: none; scroll-snap-align: start; }
+  .column-body { overflow: visible; }
+
+  /* Linha do tempo */
+  .tl-inner { --name-w: 124px; }
+  .tl-name .avatars, .tl .cal-head .caption { display: none; }
+  .tl-name { padding: 0 8px 0 12px; }
+
+  /* Carga da equipe: o nome fica preso à esquerda enquanto as datas rolam */
+  .wl-row { grid-template-columns: 136px repeat(10, 72px) 92px 92px; min-width: max-content; }
+  .wl-who, .wl-head > span:first-child { position: sticky; left: 0; z-index: 1; background: var(--surface-1); box-shadow: 1px 0 0 var(--hairline); }
+  .wl-who { padding: 12px; }
+
+  .page-narrow .h-display { font-size: var(--text-heading-sm); }
+  .inbox-head { flex-direction: column; align-items: flex-start !important; }
+  .inbox-head .h-display { flex: none !important; }
+
+  /* Calendário no celular */
+  .cal-phone { gap: 12px; }
+  .cal-phone .cal-head { gap: 4px; }
+  .mini-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); background: var(--surface-1); border-radius: var(--radius-cards); padding: 6px; }
+  .mini-dow { text-align: center; font-size: 11px; color: var(--text-faint); padding: 6px 0 2px; }
+  .mini-day { display: flex; flex-direction: column; align-items: center; gap: 2px; height: 46px; padding-top: 4px; border-radius: var(--radius-lg); color: var(--text); }
+  .mini-day .n { width: 30px; height: 30px; border-radius: 50%; display: grid; place-content: center; font-size: var(--text-body-sm); font-variant-numeric: tabular-nums; transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out); }
+  .mini-day.other { color: var(--text-faint); }
+  .mini-day.today .n { color: var(--accent-hover); font-weight: var(--font-weight-w530); }
+  .mini-day.picked .n { background: var(--surface-3); color: var(--text); }
+  .mini-day.today.picked .n { background: var(--accent); color: var(--on-accent); }
+  .mini-day:active .n { transform: scale(0.94); }
+  .mini-day .dots { display: flex; gap: 3px; height: 5px; }
+  .mini-day .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--c); }
+  .agenda { background: var(--surface-1); border-radius: var(--radius-cards); overflow: hidden; }
+  .agenda-head { display: flex; align-items: baseline; gap: 8px; padding: 16px 16px 8px; }
+  .agenda-head .count { color: var(--text-faint); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
+  .agenda-item { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 16px; border-top: 1px solid var(--hairline); cursor: pointer; }
+  .agenda-item .t { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.35; }
+  .agenda-item.done .t { color: var(--text-faint); text-decoration: line-through; }
+  .agenda-item:active { background: var(--surface-2); }
+  .agenda-empty { margin: 0; padding: 4px 16px 16px; color: var(--text-faint); font-size: var(--text-body-sm); }
+  .agenda .show-more { padding-left: 16px; }
+  .agenda-item .status-pill { font-size: 0; gap: 0; padding: 0 8px; }
+  .page-title .h-section { font-size: var(--text-subheading); }
+}
+
+@media (max-width: 480px) {
+  .tabs .tab svg { display: none; }
+}
+
+/* Toque: alvos de pelo menos 40px; o círculo de concluir ganha área invisível em volta */
+@media (pointer: coarse) {
+  .icon-btn { width: 40px; height: 40px; }
+  .tab, .chip-btn, .btn-sm, .filter-search input { height: 40px; }
+  .cell-btn { min-height: 36px; }
+  .menu-item { min-height: 44px; }
+  .swatch { width: 36px; height: 36px; }
+  .check { position: relative; }
+  .check::before { content: ''; position: absolute; inset: -12px; }
+  .group-head [data-act="toggle-group"] { width: 32px !important; height: 32px !important; }
+  .cal-day .day-head .icon-btn { width: 32px; height: 32px; }
+}
+
+/* Telas médias (tablet deitado, notebook pequeno): o nome da tarefa tem prioridade sobre as etiquetas */
+.row .title-cell .t { min-width: min(12ch, 100%); }
+.row .meta-icons { flex-shrink: 0; }
+.row .title-cell { overflow: hidden; }
+@media (max-width: 1280px) { .row .row-tags, .row .meta-icons [title="Tempo registrado"], .row .meta-icons [title="Anexos"] { display: none; } }

@@ -421,12 +421,14 @@ function renderTop() {
         `<a class="tab ${view === v ? 'on' : ''}" role="tab" href="${r.name === 'minhas' ? `#/minhas/_/${v}` : `#/${r.name}/${r.id}/${v}`}">${icon(ic, 'sm')}${label}</a>`).join('')}
     </div>
     <span class="spacer"></span>
+    <div class="filters">
     <div class="filter-search">${icon('search', 'sm')}<input class="input" data-filter-q placeholder="Filtrar tarefas" value="${esc(f.q)}" aria-label="Filtrar tarefas"></div>
     <button class="chip-btn ${f.assignees.length ? 'on' : ''}" data-act="filter-assignee">${icon('user', 'sm')}Responsável${f.assignees.length ? ` · ${f.assignees.length}` : ''}</button>
     <button class="chip-btn ${f.priorities.length ? 'on' : ''}" data-act="filter-priority">${icon('flag', 'sm')}Prioridade${f.priorities.length ? ` · ${f.priorities.length}` : ''}</button>
     ${view === 'lista' ? `<button class="chip-btn ${f.group !== 'status' ? 'on' : ''}" data-act="group">${icon('layers', 'sm')}Agrupar: ${GROUPS[f.group]}</button>` : ''}
     <button class="chip-btn ${f.sort !== 'manual' ? 'on' : ''}" data-act="sort">${icon('sort', 'sm')}${{ manual: 'Ordem manual', due: 'Prazo', priority: 'Prioridade', title: 'Nome', created: 'Mais recentes' }[f.sort]}</button>
     <button class="chip-btn ${f.showDone ? '' : 'on'}" data-act="toggle-done">${icon('check', 'sm')}${f.showDone ? 'Ocultar concluídas' : 'Mostrando abertas'}</button>
+    </div>
   </div>`;
 }
 
@@ -742,7 +744,10 @@ function boardView() {
   }).join('')}</div>`;
 }
 
+// No celular, a grade do mês vira um mês compacto com pontos + a agenda do dia escolhido (como o Calendário do iPhone)
+export const phone = matchMedia('(max-width: 640px)');
 function calendarView() {
+  if (phone.matches) return calendarAgenda();
   const tasks = filtered(S.tasks);
   const m = S.calMonth;
   const first = new Date(m.getFullYear(), m.getMonth(), 1);
@@ -775,6 +780,48 @@ function calendarView() {
         </div>`;
       }).join('')}
     </div>
+  </div>`;
+}
+
+function calendarAgenda() {
+  const tasks = filtered(S.tasks);
+  const m = S.calMonth, t0 = today();
+  const first = new Date(m.getFullYear(), m.getMonth(), 1);
+  const start = new Date(first); start.setDate(1 - first.getDay());
+  const days = [];
+  for (let i = 0; i < 42; i++) { const d = new Date(start); d.setDate(start.getDate() + i); days.push(d); }
+  if (days[35].getMonth() !== m.getMonth()) days.length = 35;
+  const byDay = {};
+  for (const t of tasks) if (t.due_date) (byDay[t.due_date] ||= []).push(t);
+  const inMonth = (k) => k.slice(0, 7) === ymd(first).slice(0, 7);
+  const sel = S.calSel && inMonth(S.calSel) ? S.calSel : inMonth(t0) ? t0 : ymd(first);
+  const list = byDay[sel] || [];
+  const canAdd = S.route.name !== 'minhas' ? defaultListForView() : S.lists[0];
+  const wd = new Date(sel + 'T12:00:00');
+  const label = `${['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'][wd.getDay()]}, ${fmtDate(sel)}`;
+  return `<div class="cal cal-phone">
+    <div class="cal-head">
+      <h2 class="h-section">${MONTHS_FULL[m.getMonth()]} ${m.getFullYear()}</h2>
+      <span class="spacer" style="flex:1"></span>
+      <button class="icon-btn" data-act="cal-prev" aria-label="Mês anterior">${icon('chevronLeft')}</button>
+      <button class="btn btn-ghost btn-sm" data-act="cal-today">Hoje</button>
+      <button class="icon-btn" data-act="cal-next" aria-label="Próximo mês">${icon('chevronRight')}</button>
+    </div>
+    <div class="mini-cal" role="grid">
+      ${['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((d) => `<span class="mini-dow" aria-hidden="true">${d}</span>`).join('')}
+      ${days.map((d) => {
+        const k = ymd(d), n = byDay[k] || [];
+        return `<button class="mini-day ${inMonth(k) ? '' : 'other'} ${k === t0 ? 'today' : ''} ${k === sel ? 'picked' : ''}" data-act="cal-pick" data-date="${k}" aria-label="${fmtDate(k)}${n.length ? `, ${n.length} tarefa${n.length > 1 ? 's' : ''}` : ''}" aria-pressed="${k === sel}">
+          <span class="n">${d.getDate()}</span><span class="dots">${n.slice(0, 3).map((t) => `<i style="--c:${esc(statusOf(t).color)}"></i>`).join('')}</span></button>`;
+      }).join('')}
+    </div>
+    <section class="agenda">
+      <div class="agenda-head"><h3 class="h-card">${label}</h3><span class="count">${list.length || ''}</span></div>
+      ${list.map((t) => { const st = statusOf(t); return `<div class="agenda-item ${isDone(t) ? 'done' : ''}" data-task="${t.id}">
+        <input type="checkbox" class="check" data-act="toggle-done-task" data-id="${t.id}" ${isDone(t) ? 'checked' : ''} aria-label="Concluir" data-stop>
+        <span class="t">${esc(t.title)}</span>${statusPill(st)}${avatars(t.assignees, 2)}</div>`; }).join('') || '<p class="agenda-empty">Nada com prazo neste dia.</p>'}
+      ${canAdd ? `<button class="show-more" data-act="cal-add" data-date="${sel}">${icon('plus', 'sm')}Nova tarefa neste dia</button>` : ''}
+    </section>
   </div>`;
 }
 
@@ -985,7 +1032,7 @@ async function inboxView(c) {
   const onlyUnread = store.get('inboxUnread', false);
   const shown = onlyUnread ? items.filter((n) => !n.read) : items;
   c.innerHTML = `<div class="page-narrow" style="max-width:820px">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px;flex-wrap:wrap"><h1 class="h-display" style="flex:1">Caixa de entrada</h1>
+    <div class="inbox-head" style="display:flex;align-items:center;gap:12px;margin-bottom:24px;flex-wrap:wrap"><h1 class="h-display" style="flex:1">Caixa de entrada</h1>
       <div class="tabs"><button class="tab ${onlyUnread ? '' : 'on'}" data-act="inbox-filter" data-v="0">Todas</button><button class="tab ${onlyUnread ? 'on' : ''}" data-act="inbox-filter" data-v="1">Não lidas</button></div>
       <button class="btn btn-ghost btn-sm" data-act="read-all" ${items.some((n) => !n.read) ? '' : 'disabled'}>Marcar todas como lidas</button></div>
     ${shown.length ? shown.map((n) => {
@@ -1462,6 +1509,7 @@ const ACTIONS = {
       });
     }, { width: 260 });
   },
+  'cal-pick': (el) => { S.calSel = el.dataset.date; renderContent(); },
   'cal-more': (el) => {
     const date = el.dataset.date;
     const list = filtered(S.tasks).filter((t) => t.due_date === date);
@@ -1710,5 +1758,7 @@ async function boot() {
 let bootedOnce = false;
 setUnauthorizedHandler(() => { es?.close(); closePopover(); closeTask(false); renderAuth(); });
 window.addEventListener('hashchange', () => { if (S.me) onRoute(); });
+// Ao girar o aparelho ou redimensionar, telas que mudam de forma no celular se refazem
+phone.addEventListener('change', () => { if (S.me && document.querySelector('.content')) renderContent(); });
 void popoverOpen;
 boot();
