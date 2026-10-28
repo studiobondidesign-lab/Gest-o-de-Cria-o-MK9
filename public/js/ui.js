@@ -105,17 +105,26 @@ export async function api(method, url, body, opts = {}) {
 export function toast(msg, { error = false, action, onAction, timeout = 3500 } = {}) {
   const box = document.getElementById('toasts');
   const el = document.createElement('div');
+  const dismiss = () => { el.classList.add('leaving'); setTimeout(() => el.remove(), 180); };
   el.className = 'toast' + (error ? ' err' : '');
   el.textContent = msg;
   if (action) {
     const b = document.createElement('button');
     b.className = 'btn btn-text btn-sm';
     b.textContent = action;
-    b.onclick = () => { onAction?.(); el.remove(); };
+    b.onclick = () => { onAction?.(); dismiss(); };
     el.append(b);
   }
   box.append(el);
-  setTimeout(() => el.remove(), timeout);
+  // O tempo pausa enquanto o mouse está em cima ou a aba está escondida
+  let left = timeout, started = Date.now(), timer = setTimeout(dismiss, left);
+  const pause = () => { clearTimeout(timer); left -= Date.now() - started; };
+  const resume = () => { started = Date.now(); clearTimeout(timer); timer = setTimeout(dismiss, Math.max(800, left)); };
+  el.addEventListener('mouseenter', pause);
+  el.addEventListener('mouseleave', resume);
+  const onVis = () => (document.hidden ? pause() : resume());
+  document.addEventListener('visibilitychange', onVis);
+  setTimeout(() => document.removeEventListener('visibilitychange', onVis), timeout + 60000);
 }
 export const fail = (e) => toast(e?.message || 'Algo deu errado', { error: true });
 
@@ -126,7 +135,8 @@ export function closePopover() {
   const { el, onClose, cleanup } = currentPop;
   currentPop = null;
   cleanup();
-  el.remove();
+  el.classList.add('leaving');
+  setTimeout(() => el.remove(), 100);
   onClose?.();
 }
 export function openPopover(anchor, build, { onClose, width } = {}) {
@@ -138,11 +148,14 @@ export function openPopover(anchor, build, { onClose, width } = {}) {
   build(el);
   const r = anchor.getBoundingClientRect();
   const pr = el.getBoundingClientRect();
-  let top = r.bottom + 6, left = r.left;
-  if (top + pr.height > innerHeight - 8) top = Math.max(8, r.top - pr.height - 6);
+  let top = r.bottom + 6, left = r.left, above = false;
+  if (top + pr.height > innerHeight - 8) { top = Math.max(8, r.top - pr.height - 6); above = true; }
   if (left + pr.width > innerWidth - 8) left = Math.max(8, innerWidth - pr.width - 8);
   el.style.top = top + 'px';
   el.style.left = left + 'px';
+  // Cresce a partir do gatilho
+  const ox = Math.min(pr.width, Math.max(0, r.left + Math.min(r.width, 40) / 2 - left));
+  el.style.setProperty('--origin', `${ox}px ${above ? '100%' : '0'}`);
   const onDown = (e) => { if (!el.contains(e.target) && !anchor.contains(e.target)) closePopover(); };
   const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closePopover(); } };
   setTimeout(() => document.addEventListener('mousedown', onDown), 0);
@@ -186,7 +199,11 @@ export function dialog(html, setup) {
   wrap.style.alignItems = 'center';
   wrap.innerHTML = `<div class="modal modal-sm" role="dialog" aria-modal="true">${html}</div>`;
   document.body.append(wrap);
-  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey, true); };
+  const close = () => {
+    document.removeEventListener('keydown', onKey, true);
+    wrap.classList.add('leaving');
+    setTimeout(() => wrap.remove(), 160);
+  };
   const onKey = (e) => { if (e.key === 'Escape' && !popoverOpen()) { e.stopPropagation(); close(); } };
   document.addEventListener('keydown', onKey, true);
   wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); });

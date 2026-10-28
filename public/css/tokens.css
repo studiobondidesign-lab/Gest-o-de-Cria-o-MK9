@@ -66,6 +66,11 @@
   --spacing-56: 56px;
   --spacing-72: 72px;
 
+  /* Movimento */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
   /* Raios */
   --radius-default: 4px;
   --radius-lg: 8px;

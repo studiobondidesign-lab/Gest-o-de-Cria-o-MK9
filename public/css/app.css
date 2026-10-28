@@ -39,7 +39,7 @@ svg.i.lg { width: 20px; height: 20px; }
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   height: 36px; padding: 0 18px; border-radius: var(--radius-buttons);
   font-size: var(--text-body-sm); font-weight: var(--font-weight-w420); white-space: nowrap;
-  transition: background-color .15s, border-color .15s, color .15s;
+  transition: transform 160ms var(--ease-out), background-color 150ms ease, border-color 150ms ease, color 150ms ease;
 }
 .btn-primary { background: var(--accent); color: var(--on-accent); }
 .btn-primary:hover { background: var(--accent-hover); }
@@ -119,7 +119,7 @@ svg.i.lg { width: 20px; height: 20px; }
 .space-row .actions { display: none; }
 .space-row:hover .actions, .space-row:focus-within .actions { display: flex; }
 .space-chip { width: 20px; height: 20px; border-radius: 6px; display: grid; place-content: center; font-size: 11px; font-weight: var(--font-weight-w530); color: var(--bg); flex: none; }
-.caret { transition: transform .15s; color: var(--text-faint); }
+.caret { transition: transform 200ms var(--ease-out); color: var(--text-faint); }
 .space.collapsed .caret { transform: rotate(-90deg); }
 .space.collapsed .space-lists { display: none; }
 .space-lists { padding-left: 18px; }
@@ -351,9 +351,8 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 
 /* ---------- Toast ---------- */
 .toasts { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 100; align-items: center; }
-.toast { background: var(--surface-3); color: var(--text); padding: 10px 18px; border-radius: var(--radius-tags); font-size: var(--text-body-sm); display: flex; gap: 12px; align-items: center; animation: toast-in .2s ease-out; }
+.toast { background: var(--surface-3); color: var(--text); padding: 10px 18px; border-radius: var(--radius-tags); font-size: var(--text-body-sm); display: flex; gap: 12px; align-items: center; }
 .toast.err { color: var(--danger); }
-@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 
 /* ---------- Membros / perfil ---------- */
 .member { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--hairline); }
@@ -382,10 +381,14 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
   .auth { grid-template-columns: minmax(0, 1fr); }
   .auth-hero { padding: var(--spacing-32) var(--spacing-24); min-height: 260px; }
   .app { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { position: fixed; inset: 0 auto 0 0; width: 280px; z-index: 60; transform: translateX(-100%); transition: transform .2s; }
+  .sidebar { position: fixed; inset: 0 auto 0 0; width: 280px; z-index: 60; transform: translateX(-100%); transition: transform 320ms var(--ease-drawer); touch-action: pan-y; }
   .app.nav-open .sidebar { transform: none; }
-  .app.nav-open::after { content: ''; position: fixed; inset: 0; background: rgba(0, 0, 0, .5); z-index: 55; }
+  .sidebar.dragging-nav { transition: none; }
+  .app::after { content: ''; position: fixed; inset: 0; background: rgba(0, 0, 0, .5); z-index: 55; opacity: 0; pointer-events: none; transition: opacity 320ms var(--ease-drawer); }
+  .app.nav-open::after { opacity: var(--scrim, 1); pointer-events: auto; }
   .mobile-only { display: inline-flex; }
+  .topbar .btn-primary { width: 40px; padding: 0; }
+  .topbar .btn-label { display: none; }
   .topbar, .toolbar { padding-left: 16px; padding-right: 16px; }
   .page, .board, .cal { padding: 16px; }
   .page-narrow { padding: 24px 16px 56px; }
@@ -401,4 +404,65 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
   .cal-day { min-height: 80px; padding: 4px; }
   .cal-task { padding: 2px 4px; font-size: 11px; }
   .cal-task .dot { display: none; }
+}
+
+
+/* ---------- Movimento e resposta ----------
+   Princípios: feedback no toque (pointer-down), curvas ease-out fortes, nada nasce de scale(0),
+   popovers saem do gatilho, modais ficam centrados, entrada e saída pelo mesmo caminho,
+   saída mais rápida que a entrada. Ações de teclado (Ctrl+K) não animam. */
+.btn:active, .icon-btn:active, .chip-btn:active, .tab:active, .nav-item:active, .menu-item:active,
+.cell-btn:active, .prop-btn:active, button.status-pill:active, .swatch:active, .search-trigger:active,
+.me-btn:active, .auth-switch button:active, .space-row .grow:active, .list-row .grow:active { transform: scale(0.97); }
+.icon-btn, .chip-btn, .tab, .nav-item, .menu-item, .cell-btn, .prop-btn, button.status-pill, .swatch, .search-trigger, .me-btn,
+.auth-switch button, .space-row .grow, .list-row .grow {
+  transition: transform 160ms var(--ease-out), background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+.check { transition: transform 160ms var(--ease-out), background-color 150ms ease, border-color 150ms ease; }
+.check:active { transform: scale(0.88); }
+.card { transition: border-color 150ms ease, opacity 150ms ease; }
+
+/* Popover: nasce do gatilho (origem definida no JS), sai mais rápido */
+.popover {
+  transform-origin: var(--origin, top left);
+  transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out);
+}
+@starting-style { .popover { opacity: 0; transform: scale(0.97); } }
+.popover.leaving { opacity: 0; transform: scale(0.98); transition-duration: 100ms; pointer-events: none; }
+
+/* Modais: centrados, entram com leve subida e saem pelo mesmo caminho */
+.overlay { transition: opacity 220ms var(--ease-out); }
+.overlay > .modal { transition: opacity 220ms var(--ease-out), transform 260ms var(--ease-out); }
+@starting-style {
+  .overlay { opacity: 0; }
+  .overlay > .modal { opacity: 0; transform: translateY(12px) scale(0.985); }
+}
+.overlay.leaving { opacity: 0; transition-duration: 160ms; pointer-events: none; }
+.overlay.leaving > .modal { opacity: 0; transform: translateY(12px) scale(0.985); transition-duration: 160ms; }
+
+/* Toasts: entram e saem por baixo (consistência espacial) */
+.toast { transition: opacity 260ms ease, transform 260ms var(--ease-out); }
+@starting-style { .toast { opacity: 0; transform: translateY(100%); } }
+.toast.leaving { opacity: 0; transform: translateY(100%); transition-duration: 180ms; }
+
+/* Toque: hover só em quem tem ponteiro fino; no celular, ações sempre visíveis */
+@media (hover: none) {
+  .space-row .actions, .list-row .actions { display: flex; }
+  .cal-day .day-head .icon-btn, .check-item .icon-btn, .att .del { opacity: 1; }
+  .card:hover { border-color: transparent; }
+}
+
+/* Acessibilidade */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-property: opacity, color, background-color, border-color !important; }
+  .overlay > .modal, .toast, .popover, .overlay.leaving > .modal, .toast.leaving { transform: none !important; }
+  @starting-style { .overlay > .modal, .toast, .popover { transform: none; } }
+  .btn:active, .icon-btn:active, .chip-btn:active, .check:active { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .overlay, .palette { backdrop-filter: none; background: rgba(10, 10, 16, .9); }
+}
+@media (prefers-contrast: more) {
+  :root { --hairline: rgba(226, 227, 237, 0.28); --hairline-strong: rgba(226, 227, 237, 0.5); --text-faint: #b4b4c0; --text-muted: #dcdce4; }
+  .card, .popover, .rows, .column, .panel { border: 1px solid var(--hairline-strong); }
 }

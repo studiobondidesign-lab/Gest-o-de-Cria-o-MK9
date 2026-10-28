@@ -334,7 +334,7 @@ function renderTop() {
   } else if (r.name === 'minhas') { title = 'Minhas tarefas'; crumbs = 'Atribuídas a você'; hasViews = true; }
   const titled = r.name === 'lista' || r.name === 'espaco' || r.name === 'minhas';
   top.innerHTML = titled ? `${burger}<div style="min-width:0;flex:1"><div class="crumbs">${crumbs}</div><div class="page-title"><h1 class="h-section" style="display:flex;align-items:center;gap:10px">${title}</h1>${actions}</div></div>
-    <button class="btn btn-primary" data-act="new-task">${icon('plus', 'sm')}Nova tarefa</button>` : `${burger}`;
+    <button class="btn btn-primary" data-act="new-task" aria-label="Nova tarefa">${icon('plus', 'sm')}<span class="btn-label">Nova tarefa</span></button>` : `${burger}`;
   top.style.display = titled ? '' : (innerWidth <= 860 ? '' : 'none');
   if (!hasViews) { tb.innerHTML = ''; return; }
   const f = S.filters;
@@ -417,6 +417,24 @@ export function renderContent() {
   else c.innerHTML = listView();
   c.scrollTop = scroll;
   if (scrollX && c.firstElementChild) c.firstElementChild.scrollLeft = scrollX;
+  applyLanding();
+}
+
+// Ao soltar um cartão, ele "pousa" partindo de onde a pessoa soltou, em vez de saltar para o lugar.
+// Sobrevive a re-renderizações: retoma a animação do ponto em que estava.
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+let landing = null;
+function applyLanding() {
+  if (!landing || reduceMotion.matches) return;
+  const elapsed = performance.now() - landing.t;
+  if (elapsed > 420) { landing = null; return; }
+  const el = document.querySelector(`.content [data-drag="${CSS.escape(landing.id)}"]`);
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  const dx = landing.x - r.left, dy = landing.y - r.top;
+  if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+  const anim = el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 420, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' });
+  anim.currentTime = elapsed;
 }
 
 function emptyState() {
@@ -1056,16 +1074,19 @@ function bindGlobal() {
     if (inp) { e.preventDefault(); try { inp.showPicker(); } catch { inp.focus(); } }
   });
   bindDnd();
+  bindDrawer();
 }
 
 // ---------- arrastar e soltar ----------
 function bindDnd() {
-  let dragId = null;
+  let dragId = null, grab = { x: 0, y: 0 };
   const clear = () => document.querySelectorAll('.drop, .drop-before').forEach((x) => x.classList.remove('drop', 'drop-before'));
   document.addEventListener('dragstart', (e) => {
     const el = e.target.closest?.('[data-drag]');
     if (!el) return;
     dragId = el.dataset.drag;
+    const r = el.getBoundingClientRect();
+    grab = { x: e.clientX - r.left, y: e.clientY - r.top }; // respeita o ponto onde a pessoa pegou
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', dragId);
     requestAnimationFrame(() => el.classList.add('dragging'));
@@ -1094,6 +1115,8 @@ function bindDnd() {
     const task = taskOf(dragId);
     clear();
     if (!task) return;
+    landing = { id: task.id, x: e.clientX - grab.x, y: e.clientY - grab.y, t: performance.now() };
+    document.querySelector(`.content [data-drag="${CSS.escape(task.id)}"]`)?.classList.remove('dragging');
     if (zone.dataset.dropDate) {
       if (task.due_date !== zone.dataset.dropDate) patchTask(task.id, { due_date: zone.dataset.dropDate }).catch(() => {});
       return;
@@ -1117,7 +1140,68 @@ function bindDnd() {
       if (pos !== task.position) patch.position = pos;
     }
     if (Object.keys(patch).length) patchTask(task.id, patch).catch(() => {});
+    else applyLanding();
   });
+}
+
+// ---------- gaveta do menu no celular: arraste 1:1, impulso e borda elástica ----------
+function bindDrawer() {
+  const project = (v, d = 0.998) => ((v / 1000) * d) / (1 - d); // projeção de impulso (px/s → px)
+  const rubber = (x, dim, c = 0.55) => (x * dim * c) / (dim + c * Math.abs(x));
+  let drag = null;
+  document.addEventListener('pointerdown', (e) => {
+    if (innerWidth > 860 || e.pointerType === 'mouse' && e.button !== 0) return;
+    const app = document.querySelector('.app'); const side = document.querySelector('.sidebar');
+    if (!app || !side) return;
+    const open = app.classList.contains('nav-open');
+    const fromEdge = !open && e.clientX < 20;
+    const onDrawer = open && (side.contains(e.target) || e.target === app);
+    if (!fromEdge && !onDrawer) return;
+    drag = { x0: e.clientX, y0: e.clientY, open, w: side.offsetWidth, hist: [{ x: e.clientX, t: e.timeStamp }], active: false, side, app, id: e.pointerId };
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+    if (!drag.active) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return; // histerese antes de decidir a direção
+      if (Math.abs(dy) > Math.abs(dx)) { drag = null; return; } // era rolagem vertical
+      drag.active = true;
+      drag.side.classList.add('dragging-nav');
+      drag.app.classList.add('nav-open');
+    }
+    drag.hist.push({ x: e.clientX, t: e.timeStamp });
+    if (drag.hist.length > 6) drag.hist.shift();
+    let pos = (drag.open ? 0 : -drag.w) + dx;
+    if (pos > 0) pos = rubber(pos, drag.w); // além do limite, resiste
+    pos = Math.max(-drag.w, pos);
+    drag.pos = pos;
+    drag.side.style.transform = `translateX(${pos}px)`;
+    drag.app.style.setProperty('--scrim', String(Math.max(0, 1 + pos / drag.w)));
+  });
+  const end = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag; drag = null;
+    if (!d.active) return;
+    const h = d.hist, a = h[0], b = h[h.length - 1];
+    const v = b.t > a.t ? ((b.x - a.x) / (b.t - a.t)) * 1000 : 0; // px/s
+    const projected = (d.pos ?? 0) + project(v);
+    const shouldOpen = projected > -d.w / 2;
+    d.side.classList.remove('dragging-nav');
+    // A transição parte do valor atual na tela, sem salto
+    requestAnimationFrame(() => {
+      d.side.style.transform = '';
+      d.app.style.removeProperty('--scrim');
+      d.app.classList.toggle('nav-open', shouldOpen);
+    });
+    // Um arraste não deve virar clique no link onde o dedo terminou
+    suppressClickUntil = performance.now() + 350;
+  };
+  let suppressClickUntil = 0;
+  document.addEventListener('click', (ev) => { if (performance.now() < suppressClickUntil) { ev.stopPropagation(); ev.preventDefault(); } }, true);
+  document.addEventListener('pointerup', end);
+  document.addEventListener('pointercancel', end);
+  // Tocar no fundo escurecido fecha a gaveta
+  document.addEventListener('click', (e) => { const app = document.querySelector('.app'); if (app && e.target === app && app.classList.contains('nav-open')) app.classList.remove('nav-open'); });
 }
 
 // ---------- tempo real ----------

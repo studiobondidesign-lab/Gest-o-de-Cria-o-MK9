@@ -40,7 +40,9 @@ export function closeTask(updateHash = true) {
   if (!state) return;
   const a = document.activeElement;
   if (a && state.overlay.contains(a)) a.blur(); // dispara salvamentos pendentes
-  state.overlay.remove();
+  const ov = state.overlay;
+  ov.classList.add('leaving');
+  setTimeout(() => ov.remove(), 160);
   state = null;
   document.removeEventListener('keydown', onKey);
   if (updateHash && location.hash.includes('tarefa=')) history.pushState(null, '', routeHash());
