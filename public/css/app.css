@@ -80,9 +80,8 @@ svg.i.lg { width: 20px; height: 20px; }
 .auth { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .auth-hero {
   position: relative; overflow: hidden; padding: var(--spacing-56); display: flex; flex-direction: column; justify-content: space-between;
-  background: radial-gradient(120% 80% at 20% 0%, #2a2a44 0%, transparent 60%), radial-gradient(90% 70% at 100% 100%, #20203a 0%, transparent 60%), var(--color-onyx-canvas);
+  background: var(--color-onyx-canvas);
 }
-.auth-hero::after { content: ''; position: absolute; inset: auto -20% -40% -20%; height: 70%; background: radial-gradient(50% 50% at 50% 50%, rgba(82, 102, 235, .18), transparent 70%); pointer-events: none; }
 .auth-hero h1 { font-family: var(--font-arcadiadisplay); font-weight: var(--font-weight-w480); font-size: clamp(36px, 4.4vw, 56px); line-height: 1.1; letter-spacing: 0.01em; margin: 0 0 var(--spacing-20); max-width: 12ch; }
 .auth-hero p { font-size: var(--text-body-lg); color: var(--text-muted); max-width: 40ch; margin: 0; }
 .auth-panel { display: flex; align-items: center; justify-content: center; padding: var(--spacing-40) var(--spacing-24); background: var(--surface-1); }
