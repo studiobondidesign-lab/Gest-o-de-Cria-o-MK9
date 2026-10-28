@@ -134,12 +134,18 @@ function hydrateTasks(rows) {
   const comments = db.prepare(`SELECT task_id, COUNT(*) n FROM comments WHERE task_id IN (${marks}) GROUP BY task_id`).all(...ids);
   const checks = db.prepare(`SELECT task_id, COUNT(*) n, SUM(done) d FROM checklist_items WHERE task_id IN (${marks}) GROUP BY task_id`).all(...ids);
   const files = db.prepare(`SELECT task_id, COUNT(*) n FROM attachments WHERE task_id IN (${marks}) GROUP BY task_id`).all(...ids);
+  const times = db.prepare(`SELECT task_id, SUM(minutes) m FROM time_entries WHERE task_id IN (${marks}) AND ended_at IS NOT NULL GROUP BY task_id`).all(...ids);
+  const running = db.prepare(`SELECT task_id, user_id, started_at FROM time_entries WHERE task_id IN (${marks}) AND ended_at IS NULL`).all(...ids);
+  const deps = db.prepare(`SELECT d.task_id, d.depends_on, t.completed_at FROM task_dependencies d JOIN tasks t ON t.id = d.depends_on
+    WHERE d.task_id IN (${marks}) AND t.archived = 0`).all(...ids);
   const by = (arr, key) => arr.reduce((m, r) => ((m[r[key]] ||= []).push(r), m), {});
   const aBy = by(assignees, 'task_id'), tBy = by(tags, 'task_id');
   const sBy = Object.fromEntries(subs.map((r) => [r.parent_id, r]));
   const cBy = Object.fromEntries(comments.map((r) => [r.task_id, r.n]));
   const kBy = Object.fromEntries(checks.map((r) => [r.task_id, r]));
   const fBy = Object.fromEntries(files.map((r) => [r.task_id, r.n]));
+  const tmBy = Object.fromEntries(times.map((r) => [r.task_id, r.m]));
+  const rBy = by(running, 'task_id'), dBy = by(deps, 'task_id');
   return rows.map((r) => ({
     ...r,
     assignees: (aBy[r.id] || []).map((a) => a.user_id),
@@ -148,6 +154,10 @@ function hydrateTasks(rows) {
     checklist: { total: kBy[r.id]?.n || 0, done: kBy[r.id]?.d || 0 },
     comment_count: cBy[r.id] || 0,
     attachment_count: fBy[r.id] || 0,
+    time_spent: tmBy[r.id] || 0,
+    timers: (rBy[r.id] || []).map((x) => ({ user_id: x.user_id, started_at: x.started_at })),
+    waiting_on: (dBy[r.id] || []).map((x) => x.depends_on),
+    blocked: (dBy[r.id] || []).some((x) => !x.completed_at),
   }));
 }
 
@@ -170,6 +180,11 @@ function taskDetail(id) {
     activity: db.prepare('SELECT * FROM activity WHERE task_id = ? ORDER BY created_at').all(id).map((a) => ({ ...a, data: JSON.parse(a.data || '{}') })),
     attachments: db.prepare('SELECT id, task_id, user_id, filename, mime, size, created_at FROM attachments WHERE task_id = ? ORDER BY created_at').all(id),
     watchers: db.prepare('SELECT user_id FROM task_watchers WHERE task_id = ?').all(id).map((r) => r.user_id),
+    time_entries: db.prepare('SELECT * FROM time_entries WHERE task_id = ? ORDER BY started_at DESC').all(id),
+    waiting_on: db.prepare(`SELECT t.id, t.title, t.list_id, t.status, t.completed_at FROM task_dependencies d JOIN tasks t ON t.id = d.depends_on
+      WHERE d.task_id = ? AND t.archived = 0`).all(id),
+    blocking: db.prepare(`SELECT t.id, t.title, t.list_id, t.status, t.completed_at FROM task_dependencies d JOIN tasks t ON t.id = d.task_id
+      WHERE d.depends_on = ? AND t.archived = 0`).all(id),
   };
 }
 
@@ -299,7 +314,10 @@ route('GET', '/api/bootstrap', ({ user }) => ({
   me: publicUser(user),
   users: db.prepare('SELECT id, name, email, color, role, active, created_at FROM users ORDER BY name').all(),
   spaces: db.prepare('SELECT * FROM spaces WHERE archived = 0 ORDER BY position, created_at').all(),
+  folders: db.prepare('SELECT * FROM folders WHERE archived = 0 ORDER BY position, created_at').all(),
   lists: db.prepare('SELECT * FROM lists WHERE archived = 0 ORDER BY position, created_at').all().map(listRow),
+  timer: db.prepare(`SELECT e.id, e.task_id, e.started_at, t.title FROM time_entries e JOIN tasks t ON t.id = e.task_id
+    WHERE e.user_id = ? AND e.ended_at IS NULL`).get(user.id) || null,
   tags: db.prepare('SELECT * FROM tags ORDER BY name').all(),
   unread: db.prepare('SELECT COUNT(*) n FROM notifications WHERE user_id = ? AND read = 0').get(user.id).n,
   favorites: db.prepare('SELECT list_id FROM favorites WHERE user_id = ?').all(user.id).map((r) => r.list_id),
@@ -336,14 +354,47 @@ route('DELETE', '/api/spaces/:id', ({ params, user }) => {
   return { ok: true };
 });
 
+// Pastas
+route('POST', '/api/folders', async ({ req }) => {
+  const b = await readJson(req);
+  const space = db.prepare('SELECT * FROM spaces WHERE id = ? AND archived = 0').get(b.space_id) || notFound('Espaço não encontrado');
+  const name = str(b.name, 80) || bad('Informe o nome da pasta');
+  const id = uid();
+  db.prepare('INSERT INTO folders (id, space_id, name, position, archived, created_at) VALUES (?, ?, ?, ?, 0, ?)')
+    .run(id, space.id, name, nextPosition('folders', 'space_id = ?', space.id), now());
+  broadcast({ type: 'structure' });
+  return db.prepare('SELECT * FROM folders WHERE id = ?').get(id);
+});
+route('PATCH', '/api/folders/:id', async ({ req, params }) => {
+  const b = await readJson(req);
+  const f = db.prepare('SELECT * FROM folders WHERE id = ?').get(params.id) || notFound();
+  db.prepare('UPDATE folders SET name = ? WHERE id = ?').run(str(b.name, 80) || bad('Nome vazio'), f.id);
+  broadcast({ type: 'structure' });
+  return { ok: true };
+});
+// Excluir a pasta não apaga as listas: elas voltam para a raiz do espaço
+route('DELETE', '/api/folders/:id', ({ params }) => {
+  db.prepare('UPDATE lists SET folder_id = NULL WHERE folder_id = ?').run(params.id);
+  db.prepare('UPDATE folders SET archived = 1 WHERE id = ?').run(params.id);
+  broadcast({ type: 'structure' });
+  return { ok: true };
+});
+
+function validFolder(folderId, spaceId) {
+  if (!folderId) return null;
+  const f = db.prepare('SELECT * FROM folders WHERE id = ? AND archived = 0').get(folderId) || notFound('Pasta não encontrada');
+  if (f.space_id !== spaceId) bad('A pasta é de outro espaço');
+  return f.id;
+}
+
 // Listas
 route('POST', '/api/lists', async ({ req }) => {
   const b = await readJson(req);
   const space = db.prepare('SELECT * FROM spaces WHERE id = ? AND archived = 0').get(b.space_id) || notFound('Espaço não encontrado');
   const name = str(b.name, 80) || bad('Informe o nome da lista');
   const id = uid();
-  db.prepare('INSERT INTO lists (id, space_id, name, statuses, position, archived, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)')
-    .run(id, space.id, name, JSON.stringify(DEFAULT_STATUSES), nextPosition('lists', 'space_id = ?', space.id), now());
+  db.prepare('INSERT INTO lists (id, space_id, folder_id, name, statuses, position, archived, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)')
+    .run(id, space.id, validFolder(b.folder_id, space.id), name, JSON.stringify(DEFAULT_STATUSES), nextPosition('lists', 'space_id = ?', space.id), now());
   broadcast({ type: 'structure' });
   return listRow(db.prepare('SELECT * FROM lists WHERE id = ?').get(id));
 });
@@ -367,7 +418,8 @@ route('PATCH', '/api/lists/:id', async ({ req, params }) => {
       if (!valid.has(t.status)) db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run(clean[0].id, t.id);
     }
   }
-  db.prepare('UPDATE lists SET name = ?, statuses = ? WHERE id = ?').run(name, statuses, l.id);
+  const folder = b.folder_id !== undefined ? validFolder(b.folder_id, l.space_id) : l.folder_id;
+  db.prepare('UPDATE lists SET name = ?, statuses = ?, folder_id = ? WHERE id = ?').run(name, statuses, folder, l.id);
   broadcast({ type: 'structure' });
   return listRow(db.prepare('SELECT * FROM lists WHERE id = ?').get(l.id));
 });
@@ -409,6 +461,7 @@ route('GET', '/api/tasks', ({ url, user }) => {
   const args = [];
   if (q.get('list_id')) { where.push('t.list_id = ?'); args.push(q.get('list_id')); }
   if (q.get('space_id')) { where.push('l.space_id = ?'); args.push(q.get('space_id')); }
+  if (q.get('folder_id')) { where.push('l.folder_id = ?'); args.push(q.get('folder_id')); }
   if (q.get('assignee') === 'me') { where.push('t.id IN (SELECT task_id FROM task_assignees WHERE user_id = ?)'); args.push(user.id); }
   if (q.get('q')) { where.push('(t.title LIKE ? OR t.description LIKE ?)'); args.push(`%${q.get('q')}%`, `%${q.get('q')}%`); }
   if (q.get('top') === '1') where.push('t.parent_id IS NULL');
@@ -488,6 +541,17 @@ route('PATCH', '/api/tasks/:id', async ({ req, params, user }) => {
     }
     if (sets.status) {
       const done = statuses.find((x) => x.id === sets.status)?.type === 'done';
+      // Avisos do ClickUp: concluir com subtarefas abertas ou esperando outra tarefa
+      if (done && !t.completed_at && !b.force) {
+        const openSubs = db.prepare('SELECT COUNT(*) n FROM tasks WHERE parent_id = ? AND archived = 0 AND completed_at IS NULL').get(t.id).n;
+        const waiting = db.prepare(`SELECT COUNT(*) n FROM task_dependencies d JOIN tasks x ON x.id = d.depends_on
+          WHERE d.task_id = ? AND x.archived = 0 AND x.completed_at IS NULL`).get(t.id).n;
+        if (openSubs || waiting) {
+          const e = new HttpError(409, waiting ? `Esta tarefa ainda espera ${waiting} tarefa${waiting > 1 ? 's' : ''} não concluída${waiting > 1 ? 's' : ''}` : `Ainda há ${openSubs} subtarefa${openSubs > 1 ? 's' : ''} aberta${openSubs > 1 ? 's' : ''}`);
+          e.code = 'incomplete';
+          throw e;
+        }
+      }
       sets.completed_at = done ? (t.completed_at || now()) : null;
     }
     if (b.priority !== undefined && b.priority !== t.priority) {
@@ -501,6 +565,11 @@ route('PATCH', '/api/tasks/:id', async ({ req, params, user }) => {
       }
     }
     if (b.position !== undefined && Number.isFinite(b.position)) sets.position = b.position;
+    if (b.time_estimate !== undefined) {
+      const m = b.time_estimate === null ? null : Math.round(Number(b.time_estimate));
+      if (m !== null && (!Number.isFinite(m) || m < 0 || m > 100000)) bad('Estimativa inválida');
+      if (m !== t.time_estimate) { sets.time_estimate = m; changes.push(['estimate', { to: m }]); }
+    }
     if (b.archived !== undefined) { sets.archived = b.archived ? 1 : 0; changes.push([b.archived ? 'archived' : 'unarchived', {}]); }
 
     if (Object.keys(sets).length) {
@@ -526,6 +595,13 @@ route('PATCH', '/api/tasks/:id', async ({ req, params, user }) => {
     }
     for (const [type, data] of changes) if (type !== 'tags') logActivity(t.id, user.id, type, data);
     const statusChange = changes.find((c) => c[0] === 'status');
+    if (statusChange && sets.completed_at && !t.completed_at) {
+      for (const w of db.prepare('SELECT task_id FROM task_dependencies WHERE depends_on = ?').all(t.id)) {
+        const wt = db.prepare('SELECT id, title FROM tasks WHERE id = ?').get(w.task_id);
+        if (wt) notify(db.prepare('SELECT user_id FROM task_assignees WHERE task_id = ?').all(wt.id).map((r) => r.user_id), user.id, wt.id, 'unblocked',
+          `concluiu "${sets.title || t.title}", liberando "${wt.title}"`);
+      }
+    }
     if (statusChange) notify(watchersOf(t.id), user.id, t.id, 'status', `mudou o status de "${sets.title || t.title}" para ${statusChange[1].to}`);
   });
   broadcast({ type: 'tasks', list_id: list.id, task_id: t.id });
@@ -538,8 +614,9 @@ route('DELETE', '/api/tasks/:id', ({ params }) => {
   tx(() => {
     const ids = [t.id, ...db.prepare('SELECT id FROM tasks WHERE parent_id = ?').all(t.id).map((r) => r.id)];
     for (const id of ids) {
-      for (const tbl of ['task_assignees', 'task_tags', 'comments', 'checklist_items', 'activity', 'attachments', 'task_watchers', 'notifications'])
+      for (const tbl of ['task_assignees', 'task_tags', 'comments', 'checklist_items', 'activity', 'attachments', 'task_watchers', 'notifications', 'time_entries', 'task_dependencies'])
         db.prepare(`DELETE FROM ${tbl} WHERE task_id = ?`).run(id);
+      db.prepare('DELETE FROM task_dependencies WHERE depends_on = ?').run(id);
       db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
     }
   });
@@ -561,8 +638,16 @@ route('POST', '/api/tasks/:id/comments', async ({ req, params, user }) => {
   const t = db.prepare('SELECT * FROM tasks WHERE id = ?').get(params.id) || notFound();
   const body = typeof b.body === 'string' ? b.body.trim().slice(0, 10000) : '';
   if (!body) bad('Comentário vazio');
+  let attachmentId = null, px = null, py = null;
+  if (b.attachment_id) {
+    const a = db.prepare('SELECT * FROM attachments WHERE id = ? AND task_id = ?').get(b.attachment_id, t.id) || notFound('Anexo não encontrado');
+    attachmentId = a.id;
+    px = Math.min(1, Math.max(0, Number(b.x) || 0));
+    py = Math.min(1, Math.max(0, Number(b.y) || 0));
+  }
   const id = uid();
-  db.prepare('INSERT INTO comments (id, task_id, user_id, body, created_at) VALUES (?, ?, ?, ?, ?)').run(id, t.id, user.id, body, now());
+  db.prepare('INSERT INTO comments (id, task_id, user_id, body, created_at, attachment_id, pin_x, pin_y, resolved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)')
+    .run(id, t.id, user.id, body, now(), attachmentId, px, py);
   const users = db.prepare('SELECT id, name FROM users WHERE active = 1').all();
   const mentioned = users.filter((u) => body.toLowerCase().includes('@' + u.name.toLowerCase().split(' ')[0])).map((u) => u.id);
   notify(mentioned, user.id, t.id, 'mention', `mencionou você em "${t.title}"`);
@@ -574,6 +659,12 @@ route('POST', '/api/tasks/:id/comments', async ({ req, params, user }) => {
 route('PATCH', '/api/comments/:id', async ({ req, params, user }) => {
   const b = await readJson(req);
   const c = db.prepare('SELECT * FROM comments WHERE id = ?').get(params.id) || notFound();
+  if (b.resolved !== undefined && b.body === undefined) {
+    db.prepare('UPDATE comments SET resolved = ? WHERE id = ?').run(b.resolved ? 1 : 0, c.id);
+    if (b.resolved && c.attachment_id) logActivity(c.task_id, user.id, 'proof_resolved', {});
+    broadcast({ type: 'tasks', task_id: c.task_id });
+    return { ok: true };
+  }
   if (c.user_id !== user.id) throw new HttpError(403, 'Você só pode editar seus comentários');
   const body = typeof b.body === 'string' ? b.body.trim().slice(0, 10000) : '';
   if (!body) bad('Comentário vazio');
@@ -655,6 +746,82 @@ route('DELETE', '/api/attachments/:id', ({ params }) => {
   return { ok: true };
 });
 
+// Controle de tempo
+function stopRunning(userId) {
+  const r = db.prepare('SELECT * FROM time_entries WHERE user_id = ? AND ended_at IS NULL').get(userId);
+  if (!r) return null;
+  const end = now();
+  const minutes = Math.max(1, Math.round((Date.parse(end) - Date.parse(r.started_at)) / 60000));
+  db.prepare('UPDATE time_entries SET ended_at = ?, minutes = ? WHERE id = ?').run(end, minutes, r.id);
+  return r.task_id;
+}
+route('POST', '/api/tasks/:id/timer', ({ params, user }) => {
+  const t = db.prepare('SELECT * FROM tasks WHERE id = ?').get(params.id) || notFound();
+  const prev = stopRunning(user.id);
+  db.prepare('INSERT INTO time_entries (id, task_id, user_id, started_at, ended_at, minutes, note, created_at) VALUES (?, ?, ?, ?, NULL, 0, \'\', ?)')
+    .run(uid(), t.id, user.id, now(), now());
+  broadcast({ type: 'tasks', list_id: t.list_id, task_id: t.id });
+  if (prev && prev !== t.id) broadcast({ type: 'tasks', task_id: prev });
+  return { ok: true };
+});
+route('POST', '/api/timer/stop', ({ user }) => {
+  const taskId = stopRunning(user.id);
+  if (taskId) broadcast({ type: 'tasks', task_id: taskId });
+  return { ok: true, task_id: taskId };
+});
+route('POST', '/api/tasks/:id/time', async ({ req, params, user }) => {
+  const b = await readJson(req);
+  const t = db.prepare('SELECT * FROM tasks WHERE id = ?').get(params.id) || notFound();
+  const minutes = Math.round(Number(b.minutes));
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 24 * 60) bad('Informe um tempo entre 1 minuto e 24 horas');
+  const day = isDate(b.date) && b.date ? b.date : now().slice(0, 10);
+  const start = new Date(day + 'T12:00:00Z').toISOString();
+  db.prepare('INSERT INTO time_entries (id, task_id, user_id, started_at, ended_at, minutes, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(uid(), t.id, user.id, start, start, minutes, str(b.note, 200), now());
+  broadcast({ type: 'tasks', list_id: t.list_id, task_id: t.id });
+  return { ok: true };
+});
+route('DELETE', '/api/time/:id', ({ params, user }) => {
+  const e = db.prepare('SELECT * FROM time_entries WHERE id = ?').get(params.id) || notFound();
+  if (e.user_id !== user.id && user.role !== 'admin') throw new HttpError(403, 'Você só pode apagar seus registros');
+  db.prepare('DELETE FROM time_entries WHERE id = ?').run(e.id);
+  broadcast({ type: 'tasks', task_id: e.task_id });
+  return { ok: true };
+});
+// Relatório de horas: registros concluídos num intervalo, para a visão de carga
+route('GET', '/api/time', ({ url }) => {
+  const from = url.searchParams.get('from') || '0000';
+  const to = url.searchParams.get('to') || '9999';
+  return db.prepare(`SELECT user_id, task_id, minutes, started_at FROM time_entries WHERE ended_at IS NOT NULL AND started_at >= ? AND started_at < ?`).all(from, to);
+});
+
+// Dependências: task_id espera depends_on
+route('POST', '/api/tasks/:id/dependencies', async ({ req, params, user }) => {
+  const b = await readJson(req);
+  const t = db.prepare('SELECT * FROM tasks WHERE id = ?').get(params.id) || notFound();
+  const other = db.prepare('SELECT * FROM tasks WHERE id = ?').get(b.depends_on) || notFound('Tarefa não encontrada');
+  if (other.id === t.id) bad('Uma tarefa não pode depender dela mesma');
+  // impede ciclo: other não pode (direta ou indiretamente) esperar t
+  const seen = new Set();
+  const stack = [other.id];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (cur === t.id) bad('Isso criaria uma dependência circular');
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const r of db.prepare('SELECT depends_on FROM task_dependencies WHERE task_id = ?').all(cur)) stack.push(r.depends_on);
+  }
+  db.prepare('INSERT OR IGNORE INTO task_dependencies (task_id, depends_on, created_at) VALUES (?, ?, ?)').run(t.id, other.id, now());
+  logActivity(t.id, user.id, 'dependency', { title: other.title });
+  broadcast({ type: 'tasks', list_id: t.list_id, task_id: t.id });
+  return { ok: true };
+});
+route('DELETE', '/api/tasks/:id/dependencies/:other', ({ params }) => {
+  db.prepare('DELETE FROM task_dependencies WHERE task_id = ? AND depends_on = ?').run(params.id, params.other);
+  broadcast({ type: 'tasks', task_id: params.id });
+  return { ok: true };
+});
+
 // Notificações
 route('GET', '/api/notifications', ({ user }) => db.prepare(`SELECT n.*, t.title task_title FROM notifications n
   LEFT JOIN tasks t ON t.id = n.task_id WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 200`).all(user.id));
@@ -708,7 +875,7 @@ const server = http.createServer(async (req, res) => {
     throw new HttpError(404, 'Rota não encontrada');
   } catch (e) {
     if (!(e instanceof HttpError)) console.error(e);
-    if (!res.headersSent) send(res, e.status || 500, { error: e instanceof HttpError ? e.message : 'Erro interno' });
+    if (!res.headersSent) send(res, e.status || 500, { error: e instanceof HttpError ? e.message : 'Erro interno', code: e.code });
   }
 });
 

@@ -6,9 +6,10 @@ import { openTask, closeTask, refreshTask, currentTaskId, taskIsBusy } from './t
 
 // ---------- estado ----------
 export const S = {
-  me: null, users: [], spaces: [], lists: [], tags: [], unread: 0, favorites: [],
-  route: { name: 'inicio' }, tasks: [], loadingTasks: false,
-  filters: { q: '', assignees: [], priorities: [], showDone: true, sort: 'manual' },
+  me: null, users: [], spaces: [], folders: [], lists: [], tags: [], unread: 0, favorites: [], timer: null,
+  route: { name: 'inicio' }, tasks: [], loadingTasks: false, selected: new Set(), timeLog: [],
+  filters: { q: '', assignees: [], priorities: [], showDone: true, sort: 'manual', group: 'status' },
+  tlStart: null,
   calMonth: (() => { const d = new Date(); d.setDate(1); return d; })(),
   config: {},
 };
@@ -23,6 +24,24 @@ export const userById = (id) => S.users.find((u) => u.id === id);
 export const listById = (id) => S.lists.find((l) => l.id === id);
 export const spaceById = (id) => S.spaces.find((s) => s.id === id);
 export const tagById = (id) => S.tags.find((t) => t.id === id);
+export const folderById = (id) => S.folders.find((f) => f.id === id);
+// Rotas que mostram tarefas com as visões Lista / Quadro / Calendário / Linha do tempo
+const TASK_ROUTES = ['lista', 'espaco', 'pasta', 'minhas'];
+export function fmtMinutes(m) {
+  m = Math.round(m || 0);
+  if (m < 60) return `${m}min`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h}h ${r}min` : `${h}h`;
+}
+export function parseDuration(text) {
+  // aceita "1h30", "1h 30min", "90", "90m", "1,5h"
+  const t = String(text || '').toLowerCase().replace(',', '.').trim();
+  if (!t) return null;
+  const hm = t.match(/^(\d+(?:\.\d+)?)\s*h\s*(?:(\d+)\s*(?:m|min)?)?$/);
+  if (hm) return Math.round(parseFloat(hm[1]) * 60 + (hm[2] ? parseInt(hm[2], 10) : 0));
+  const m = t.match(/^(\d+)\s*(?:m|min)?$/);
+  return m ? parseInt(m[1], 10) : NaN;
+}
 export const statusOf = (task) => listById(task.list_id)?.statuses.find((s) => s.id === task.status) || { id: task.status, name: task.status, color: '#70707d', type: 'open' };
 export const isDone = (task) => statusOf(task).type === 'done';
 
@@ -44,15 +63,16 @@ export const dateHtml = (task) => task.due_date ? `<span class="date ${dateClass
 // ---------- dados ----------
 export async function loadBootstrap() {
   const b = await api('GET', '/api/bootstrap');
-  Object.assign(S, { me: b.me, users: b.users, spaces: b.spaces, lists: b.lists, tags: b.tags, unread: b.unread, favorites: b.favorites });
+  Object.assign(S, { me: b.me, users: b.users, spaces: b.spaces, folders: b.folders || [], lists: b.lists, tags: b.tags, unread: b.unread, favorites: b.favorites, timer: b.timer });
 }
 
 function tasksQuery() {
   const r = S.route;
   if (r.name === 'lista') return `list_id=${encodeURIComponent(r.id)}`;
   if (r.name === 'espaco') return `space_id=${encodeURIComponent(r.id)}`;
+  if (r.name === 'pasta') return `folder_id=${encodeURIComponent(r.id)}`;
   if (r.name === 'minhas') return 'assignee=me';
-  if (r.name === 'inicio') return '';
+  if (r.name === 'inicio' || r.name === 'carga') return '';
   return null;
 }
 let tasksSeq = 0;
@@ -60,8 +80,13 @@ export async function loadTasks() {
   const q = tasksQuery();
   if (q === null) { S.tasks = []; return; }
   const seq = ++tasksSeq;
-  const rows = await api('GET', '/api/tasks?' + q);
-  if (seq === tasksSeq) S.tasks = rows;
+  const [rows, log] = await Promise.all([
+    api('GET', '/api/tasks?' + q),
+    S.route.name === 'carga' ? api('GET', '/api/time?from=' + encodeURIComponent(new Date(Date.now() - 7 * 864e5).toISOString())) : null,
+  ]);
+  if (seq !== tasksSeq) return;
+  S.tasks = rows;
+  if (log) S.timeLog = log;
 }
 
 // Atualiza uma tarefa localmente (otimista) e no servidor.
@@ -78,6 +103,11 @@ export async function patchTask(id, patch, { silent = false } = {}) {
     return updated;
   } catch (e) {
     if (t && before) { Object.assign(t, before); renderContent(); }
+    // Aviso de tarefa incompleta (subtarefas abertas ou esperando outra tarefa): confirma e conclui mesmo assim
+    if (e.code === 'incomplete' && !patch.force) {
+      if (await confirmDialog('Concluir mesmo assim?', e.message + '.', { ok: 'Concluir assim mesmo' })) return patchTask(id, { ...patch, force: true }, { silent });
+      throw e;
+    }
     if (!silent) fail(e);
     throw e;
   }
@@ -88,7 +118,8 @@ export async function createTask(data) {
   if (!S.tasks.some((x) => x.id === t.id) && tasksQuery() !== null) {
     const r = S.route;
     const belongs = r.name === 'inicio' || (r.name === 'lista' && t.list_id === r.id)
-      || (r.name === 'espaco' && listById(t.list_id)?.space_id === r.id) || (r.name === 'minhas' && t.assignees.includes(S.me.id));
+      || (r.name === 'espaco' && listById(t.list_id)?.space_id === r.id) || (r.name === 'pasta' && listById(t.list_id)?.folder_id === r.id)
+      || (r.name === 'minhas' && t.assignees.includes(S.me.id)) || r.name === 'carga';
     if (belongs) S.tasks.push(t);
   }
   renderContent();
@@ -168,7 +199,7 @@ function parseHash() {
 }
 export function go(hash) { location.hash = hash; }
 export function routeHash(r = S.route) {
-  if (r.name === 'lista' || r.name === 'espaco') return `#/${r.name}/${r.id}/${r.view}`;
+  if (r.name === 'lista' || r.name === 'espaco' || r.name === 'pasta') return `#/${r.name}/${r.id}/${r.view}`;
   if (r.name === 'minhas') return `#/minhas/_/${r.view}`;
   return `#/${r.name}`;
 }
@@ -179,9 +210,11 @@ async function onRoute() {
   const prev = S.route;
   const changed = prev.name !== r.name || prev.id !== r.id || prev.view !== r.view;
   S.route = r;
-  if (r.id && (r.name === 'lista' || r.name === 'espaco')) store.set('view:' + r.id, r.view);
+  if (r.id && TASK_ROUTES.includes(r.name)) store.set('view:' + r.id, r.view);
   if (changed || !S.shellRendered) {
     S.filters.q = '';
+    S.filters.group = store.get('group:' + (r.id || r.name), 'status');
+    S.selected.clear();
     renderShell();
     S.loadingTasks = true;
     renderContent();
@@ -274,6 +307,7 @@ export function renderSidebar() {
       ${navItem('inicio', 'home', 'Início')}
       ${navItem('entrada', 'inbox', 'Caixa de entrada', S.unread ? `<span class="count">${S.unread > 99 ? '99+' : S.unread}</span>` : '')}
       ${navItem('minhas', 'user', 'Minhas tarefas')}
+      ${navItem('carga', 'chart', 'Carga da equipe')}
       ${navItem('membros', 'users', 'Equipe')}
     </nav>
     <div class="sidebar-scroll">
@@ -282,31 +316,57 @@ export function renderSidebar() {
       <div class="sidebar-section">
         <div class="sidebar-section-head"><span class="eyebrow">Espaços</span><button class="icon-btn" data-act="new-space" title="Novo espaço" aria-label="Novo espaço">${icon('plus', 'sm')}</button></div>
         ${S.spaces.length ? S.spaces.map((s) => {
-          const lists = S.lists.filter((l) => l.space_id === s.id);
+          const lists = S.lists.filter((l) => l.space_id === s.id && !folderById(l.folder_id));
+          const folders = S.folders.filter((f) => f.space_id === s.id);
           const collapsed = collapsedSpaces.has(s.id);
+          const listRow = (l) => `<div class="list-row ${r.name === 'lista' && r.id === l.id ? 'on' : ''}">
+                <a class="grow" href="#/lista/${l.id}/${store.get('view:' + l.id, 'lista')}"><span class="dot" style="color:${esc(s.color)}"></span><span class="ellipsis">${esc(l.name)}</span></a>
+                <span class="actions"><button class="icon-btn" style="width:24px;height:24px" data-act="list-menu" data-id="${l.id}" aria-label="Opções da lista">${icon('more', 'sm')}</button></span>
+              </div>`;
           return `<div class="space ${collapsed ? 'collapsed' : ''}">
             <div class="space-row ${r.name === 'espaco' && r.id === s.id ? 'on' : ''}">
               <button class="icon-btn" style="width:20px;height:20px" data-act="toggle-space" data-id="${s.id}" aria-label="Expandir">${icon('chevron', 'sm caret')}</button>
               <a class="grow" href="#/espaco/${s.id}/${store.get('view:' + s.id, 'lista')}"><span class="space-chip" style="background:${esc(s.color)}">${esc(initials(s.name)[0])}</span><span class="ellipsis">${esc(s.name)}</span></a>
               <span class="actions"><button class="icon-btn" style="width:24px;height:24px" data-act="space-menu" data-id="${s.id}" aria-label="Opções do espaço">${icon('more', 'sm')}</button>
-              <button class="icon-btn" style="width:24px;height:24px" data-act="new-list" data-id="${s.id}" aria-label="Nova lista">${icon('plus', 'sm')}</button></span>
+              <button class="icon-btn" style="width:24px;height:24px" data-act="new-in-space" data-id="${s.id}" aria-label="Nova lista ou pasta">${icon('plus', 'sm')}</button></span>
             </div>
             <div class="space-lists">
-              ${lists.map((l) => `<div class="list-row ${r.name === 'lista' && r.id === l.id ? 'on' : ''}">
-                <a class="grow" href="#/lista/${l.id}/${store.get('view:' + l.id, 'lista')}"><span class="dot" style="color:${esc(s.color)}"></span><span class="ellipsis">${esc(l.name)}</span></a>
-                <span class="actions"><button class="icon-btn" style="width:24px;height:24px" data-act="list-menu" data-id="${l.id}" aria-label="Opções da lista">${icon('more', 'sm')}</button></span>
-              </div>`).join('')}
-              ${!lists.length ? `<button class="list-row faint" style="width:100%" data-act="new-list" data-id="${s.id}">${icon('plus', 'sm')} Nova lista</button>` : ''}
+              ${folders.map((f) => {
+                const fl = S.lists.filter((l) => l.folder_id === f.id);
+                return `<div class="folder ${collapsedSpaces.has(f.id) ? 'collapsed' : ''}">
+                  <div class="list-row folder-row ${r.name === 'pasta' && r.id === f.id ? 'on' : ''}">
+                    <button class="icon-btn" style="width:18px;height:18px;margin-left:-8px" data-act="toggle-space" data-id="${f.id}" aria-label="Expandir pasta">${icon('chevron', 'sm caret')}</button>
+                    <a class="grow" href="#/pasta/${f.id}/${store.get('view:' + f.id, 'lista')}">${icon('folder', 'sm')}<span class="ellipsis">${esc(f.name)}</span></a>
+                    <span class="actions"><button class="icon-btn" style="width:24px;height:24px" data-act="folder-menu" data-id="${f.id}" aria-label="Opções da pasta">${icon('more', 'sm')}</button>
+                    <button class="icon-btn" style="width:24px;height:24px" data-act="new-list" data-id="${s.id}" data-folder="${f.id}" aria-label="Nova lista na pasta">${icon('plus', 'sm')}</button></span>
+                  </div>
+                  <div class="folder-lists">${fl.map(listRow).join('') || `<button class="list-row faint" style="width:100%" data-act="new-list" data-id="${s.id}" data-folder="${f.id}">${icon('plus', 'sm')} Nova lista</button>`}</div>
+                </div>`;
+              }).join('')}
+              ${lists.map(listRow).join('')}
+              ${!lists.length && !folders.length ? `<button class="list-row faint" style="width:100%" data-act="new-list" data-id="${s.id}">${icon('plus', 'sm')} Nova lista</button>` : ''}
             </div>
           </div>`;
         }).join('') : `<button class="nav-item" data-act="new-space">${icon('plus', 'sm')}Criar primeiro espaço</button>`}
       </div>
     </div>
     <div class="sidebar-foot">
+      ${S.timer ? `<div class="timer-pill"><span class="rec" aria-hidden="true"></span><a class="ellipsis" href="${taskHash(S.timer.task_id)}" title="${esc(S.timer.title)}">${esc(S.timer.title)}</a>
+        <span class="elapsed" data-timer-elapsed>${elapsed(S.timer.started_at)}</span><button class="icon-btn" data-act="timer-stop" title="Parar cronômetro" aria-label="Parar cronômetro">${icon('stop', 'sm')}</button></div>` : ''}
       <button class="me-btn" data-act="me-menu">${avatar(S.me, 'md')}<span style="min-width:0;flex:1"><span class="ellipsis" style="display:block">${esc(S.me.name)}</span><span class="caption faint ellipsis" style="display:block">${esc(S.me.email)}</span></span>${icon('more', 'sm')}</button>
     </div>`;
   void counts;
 }
+
+export function elapsed(iso) {
+  const sec = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+  return `${h ? h + ':' : ''}${String(m).padStart(h ? 2 : 1, '0')}:${String(x).padStart(2, '0')}`;
+}
+setInterval(() => {
+  if (!S.timer) return;
+  document.querySelectorAll('[data-timer-elapsed]').forEach((el) => { el.textContent = elapsed(el.dataset.since || S.timer.started_at); });
+}, 1000);
 
 function renderTop() {
   const top = document.querySelector('.topbar');
@@ -331,8 +391,15 @@ function renderTop() {
     crumbs = 'Espaço';
     actions = `<button class="icon-btn" data-act="space-menu" data-id="${s.id}" aria-label="Opções do espaço">${icon('more')}</button>`;
     hasViews = true;
+  } else if (r.name === 'pasta') {
+    const f = folderById(r.id), s = f && spaceById(f.space_id);
+    if (!f) { top.innerHTML = burger; tb.innerHTML = ''; return; }
+    crumbs = `<a href="#/espaco/${s.id}/${store.get('view:' + s.id, 'lista')}">${esc(s.name)}</a>`;
+    title = `${icon('folder', 'lg')}${esc(f.name)}`;
+    actions = `<button class="icon-btn" data-act="folder-menu" data-id="${f.id}" aria-label="Opções da pasta">${icon('more')}</button>`;
+    hasViews = true;
   } else if (r.name === 'minhas') { title = 'Minhas tarefas'; crumbs = 'Atribuídas a você'; hasViews = true; }
-  const titled = r.name === 'lista' || r.name === 'espaco' || r.name === 'minhas';
+  const titled = TASK_ROUTES.includes(r.name);
   top.innerHTML = titled ? `${burger}<div style="min-width:0;flex:1"><div class="crumbs">${crumbs}</div><div class="page-title"><h1 class="h-section" style="display:flex;align-items:center;gap:10px">${title}</h1>${actions}</div></div>
     <button class="btn btn-primary" data-act="new-task" aria-label="Nova tarefa">${icon('plus', 'sm')}<span class="btn-label">Nova tarefa</span></button>` : `${burger}`;
   top.style.display = titled ? '' : (innerWidth <= 860 ? '' : 'none');
@@ -341,17 +408,20 @@ function renderTop() {
   const view = r.view;
   tb.innerHTML = `<div class="toolbar">
     <div class="tabs" role="tablist">
-      ${[['lista', 'list', 'Lista'], ['quadro', 'board', 'Quadro'], ['calendario', 'calendar', 'Calendário']].map(([v, ic, label]) =>
+      ${[['lista', 'list', 'Lista'], ['quadro', 'board', 'Quadro'], ['calendario', 'calendar', 'Calendário'], ['linha', 'timeline', 'Linha do tempo']].map(([v, ic, label]) =>
         `<a class="tab ${view === v ? 'on' : ''}" role="tab" href="${r.name === 'minhas' ? `#/minhas/_/${v}` : `#/${r.name}/${r.id}/${v}`}">${icon(ic, 'sm')}${label}</a>`).join('')}
     </div>
     <span class="spacer"></span>
     <div class="filter-search">${icon('search', 'sm')}<input class="input" data-filter-q placeholder="Filtrar tarefas" value="${esc(f.q)}" aria-label="Filtrar tarefas"></div>
     <button class="chip-btn ${f.assignees.length ? 'on' : ''}" data-act="filter-assignee">${icon('user', 'sm')}Responsável${f.assignees.length ? ` · ${f.assignees.length}` : ''}</button>
     <button class="chip-btn ${f.priorities.length ? 'on' : ''}" data-act="filter-priority">${icon('flag', 'sm')}Prioridade${f.priorities.length ? ` · ${f.priorities.length}` : ''}</button>
+    ${view === 'lista' ? `<button class="chip-btn ${f.group !== 'status' ? 'on' : ''}" data-act="group">${icon('layers', 'sm')}Agrupar: ${GROUPS[f.group]}</button>` : ''}
     <button class="chip-btn ${f.sort !== 'manual' ? 'on' : ''}" data-act="sort">${icon('sort', 'sm')}${{ manual: 'Ordem manual', due: 'Prazo', priority: 'Prioridade', title: 'Nome', created: 'Mais recentes' }[f.sort]}</button>
     <button class="chip-btn ${f.showDone ? '' : 'on'}" data-act="toggle-done">${icon('check', 'sm')}${f.showDone ? 'Ocultar concluídas' : 'Mostrando abertas'}</button>
   </div>`;
 }
+
+const GROUPS = { status: 'Status', assignee: 'Responsável', priority: 'Prioridade', due: 'Prazo', list: 'Lista', none: 'Nenhum' };
 
 // ---------- filtros ----------
 function filtered(tasks) {
@@ -359,7 +429,7 @@ function filtered(tasks) {
   const q = f.q.trim().toLowerCase();
   let out = tasks.filter((t) => !t.archived);
   // Em listas e espaços, subtarefas aparecem dentro da tarefa pai (como no ClickUp)
-  if (S.route.name === 'lista' || S.route.name === 'espaco') out = out.filter((t) => !t.parent_id);
+  if (['lista', 'espaco', 'pasta'].includes(S.route.name)) out = out.filter((t) => !t.parent_id);
   if (q) out = out.filter((t) => t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q));
   if (f.assignees.length) out = out.filter((t) => f.assignees.some((a) => a === '__none' ? !t.assignees.length : t.assignees.includes(a)));
   if (f.priorities.length) out = out.filter((t) => f.priorities.includes(t.priority || '__none'));
@@ -379,12 +449,15 @@ function sortTasks(arr) {
 }
 
 // Colunas de status para a visão atual (une listas diferentes pelo id do status)
-function viewStatuses(tasks) {
+function viewLists(tasks = S.tasks) {
   const r = S.route;
-  let lists;
-  if (r.name === 'lista') lists = [listById(r.id)].filter(Boolean);
-  else if (r.name === 'espaco') lists = S.lists.filter((l) => l.space_id === r.id);
-  else lists = [...new Set(tasks.map((t) => t.list_id))].map(listById).filter(Boolean);
+  if (r.name === 'lista') return [listById(r.id)].filter(Boolean);
+  if (r.name === 'espaco') return S.lists.filter((l) => l.space_id === r.id);
+  if (r.name === 'pasta') return S.lists.filter((l) => l.folder_id === r.id);
+  return [...new Set(tasks.map((t) => t.list_id))].map(listById).filter(Boolean);
+}
+function viewStatuses(tasks) {
+  const lists = viewLists(tasks);
   const seen = new Map();
   for (const l of lists) for (const s of l.statuses) if (!seen.has(s.id)) seen.set(s.id, s);
   for (const t of tasks) if (!seen.has(t.status)) seen.set(t.status, statusOf(t));
@@ -393,7 +466,7 @@ function viewStatuses(tasks) {
 function defaultListForView() {
   const r = S.route;
   if (r.name === 'lista') return listById(r.id);
-  if (r.name === 'espaco') return S.lists.find((l) => l.space_id === r.id);
+  if (r.name === 'espaco' || r.name === 'pasta') return viewLists()[0] || null;
   return null;
 }
 
@@ -403,21 +476,28 @@ export function renderContent() {
   if (!c) return;
   const r = S.route;
   const scroll = c.scrollTop, scrollX = c.firstElementChild?.scrollLeft;
-  if (S.loadingTasks && ['lista', 'espaco', 'minhas', 'inicio'].includes(r.name)) { c.innerHTML = '<div class="loading">Carregando…</div>'; return; }
-  if ((r.name === 'lista' && !listById(r.id)) || (r.name === 'espaco' && !spaceById(r.id))) {
+  if (S.loadingTasks && [...TASK_ROUTES, 'inicio', 'carga'].includes(r.name)) { c.innerHTML = '<div class="loading">Carregando…</div>'; return; }
+  if ((r.name === 'lista' && !listById(r.id)) || (r.name === 'espaco' && !spaceById(r.id)) || (r.name === 'pasta' && !folderById(r.id))) {
     c.innerHTML = `<div class="empty"><div class="h-card">Não encontramos esta página</div><p>Ela pode ter sido arquivada.</p><a class="btn btn-ghost" href="#/inicio">Voltar ao início</a></div>`;
     return;
   }
   if (r.name === 'inicio') c.innerHTML = homeView();
   else if (r.name === 'entrada') { c.innerHTML = '<div class="loading">Carregando…</div>'; inboxView(c); return; }
   else if (r.name === 'membros') c.innerHTML = membersView();
+  else if (r.name === 'carga') c.innerHTML = workloadView();
   else if (r.name === 'perfil') { c.innerHTML = profileView(); bindProfile(c); }
   else if (r.view === 'quadro') c.innerHTML = boardView();
   else if (r.view === 'calendario') c.innerHTML = calendarView();
+  else if (r.view === 'linha') { c.innerHTML = timelineView(); }
   else c.innerHTML = listView();
   c.scrollTop = scroll;
   if (scrollX && c.firstElementChild) c.firstElementChild.scrollLeft = scrollX;
+  if (r.view === 'linha' && TASK_ROUTES.includes(r.name)) {
+    const tl = c.querySelector('.tl-scroll');
+    if (tl) tl.scrollLeft = S.tlScroll ?? tl.scrollLeft;
+  }
   applyLanding();
+  renderBulkBar();
 }
 
 // Ao soltar um cartão, ele "pousa" partindo de onde a pessoa soltou, em vez de saltar para o lugar.
@@ -440,7 +520,7 @@ function applyLanding() {
 function emptyState() {
   const r = S.route;
   if (r.name === 'minhas') return `<div class="empty"><div class="h-card">Nada atribuído a você</div><p>Quando alguém te colocar como responsável, a tarefa aparece aqui.</p></div>`;
-  if (r.name === 'espaco' && !S.lists.some((l) => l.space_id === r.id)) return `<div class="empty"><div class="h-card">Este espaço ainda não tem listas</div><button class="btn btn-primary" data-act="new-list" data-id="${r.id}">${icon('plus', 'sm')}Criar lista</button></div>`;
+  if ((r.name === 'espaco' || r.name === 'pasta') && !viewLists().length) return `<div class="empty"><div class="h-card">Este espaço ainda não tem listas</div><button class="btn btn-primary" data-act="new-list" data-id="${r.id}">${icon('plus', 'sm')}Criar lista</button></div>`;
   return '';
 }
 
@@ -448,10 +528,13 @@ function rowHtml(t, { showList = false } = {}) {
   const st = statusOf(t), done = st.type === 'done';
   const l = listById(t.list_id);
   const parent = t.parent_id ? S.tasks.find((x) => x.id === t.parent_id) : null;
-  const drag = S.filters.sort === 'manual' ? 'draggable="true"' : '';
-  return `<div class="row ${done ? 'done' : ''}" data-task="${t.id}" data-drag="${t.id}" ${drag}>
+  const drag = S.filters.sort === 'manual' && S.filters.group === 'status' ? 'draggable="true"' : '';
+  const sel = S.selected.has(t.id);
+  return `<div class="row ${done ? 'done' : ''} ${sel ? 'selected' : ''}" data-task="${t.id}" data-drag="${t.id}" ${drag}>
     <div class="title-cell">
+      <input type="checkbox" class="sel" data-act="select" data-id="${t.id}" ${sel ? 'checked' : ''} aria-label="Selecionar" data-stop>
       <input type="checkbox" class="check" data-act="toggle-done-task" data-id="${t.id}" ${done ? 'checked' : ''} aria-label="Concluir" data-stop>
+      ${t.blocked && !done ? `<span class="blocked" title="Esperando outra tarefa">${icon('lock', 'sm')}</span>` : ''}
       <span class="t">${esc(t.title)}</span>
       ${parent ? `<span class="sub-of">${icon('subtask', 'sm')} ${esc(parent.title)}</span>` : ''}
       ${showList && l ? `<span class="sub-of">${esc(l.name)}</span>` : ''}
@@ -460,6 +543,7 @@ function rowHtml(t, { showList = false } = {}) {
         ${t.checklist.total ? `<span title="Checklist">${icon('checklist', 'sm')}${t.checklist.done}/${t.checklist.total}</span>` : ''}
         ${t.comment_count ? `<span title="Comentários">${icon('comment', 'sm')}${t.comment_count}</span>` : ''}
         ${t.attachment_count ? `<span title="Anexos">${icon('paperclip', 'sm')}${t.attachment_count}</span>` : ''}
+        ${t.timers?.length ? `<span class="running" title="Cronômetro rodando">${icon('clock', 'sm')}</span>` : t.time_spent ? `<span title="Tempo registrado">${icon('clock', 'sm')}${fmtMinutes(t.time_spent)}</span>` : ''}
       </span>
       <span class="row-tags">${t.tags.map((id) => tagHtml(tagById(id))).join('')}</span>
     </div>
@@ -472,30 +556,145 @@ function rowHtml(t, { showList = false } = {}) {
   </div>`;
 }
 
+// Grupos da visão em lista, como o "Agrupar por" do ClickUp.
+// Cada grupo sabe filtrar suas tarefas e o que pré-preencher ao criar uma tarefa nele.
+function listGroups(tasks) {
+  const g = S.filters.group, t0 = today();
+  if (g === 'status') return viewStatuses(S.tasks).map((st) => ({
+    id: st.id, head: statusPill(st), match: (t) => t.status === st.id, preset: { status: st.id }, drop: st.id, hideEmpty: !S.filters.showDone && st.type === 'done',
+  }));
+  if (g === 'assignee') return [
+    ...S.users.filter((u) => u.active || tasks.some((t) => t.assignees.includes(u.id))).map((u) => ({
+      id: u.id, head: `${avatar(u)}<span class="h-card" style="font-size:14px">${esc(u.name)}</span>`, match: (t) => t.assignees.includes(u.id), preset: { assignees: [u.id] }, hideEmpty: true,
+    })),
+    { id: '__none', head: `<span class="avatar-empty">${icon('user', 'sm')}</span><span class="h-card muted" style="font-size:14px">Sem responsável</span>`, match: (t) => !t.assignees.length, preset: {} },
+  ];
+  if (g === 'priority') return [...Object.keys(PRIORITY), null].map((k) => ({
+    id: k || '__none', head: k ? `${prioHtml(k)}` : '<span class="prio faint">Sem prioridade</span>', match: (t) => (t.priority || null) === k, preset: { priority: k }, hideEmpty: true,
+  }));
+  if (g === 'due') {
+    const wk = addDays(t0, 7);
+    return [
+      { id: 'late', head: '<span class="h-card" style="font-size:14px;color:var(--danger)">Atrasadas</span>', match: (t) => t.due_date && t.due_date < t0 && !isDone(t), preset: {}, hideEmpty: true },
+      { id: 'today', head: '<span class="h-card" style="font-size:14px">Hoje</span>', match: (t) => t.due_date === t0, preset: { due_date: t0 } },
+      { id: 'tomorrow', head: '<span class="h-card" style="font-size:14px">Amanhã</span>', match: (t) => t.due_date === addDays(t0, 1), preset: { due_date: addDays(t0, 1) } },
+      { id: 'week', head: '<span class="h-card" style="font-size:14px">Próximos 7 dias</span>', match: (t) => t.due_date > addDays(t0, 1) && t.due_date <= wk, preset: {}, hideEmpty: true },
+      { id: 'later', head: '<span class="h-card" style="font-size:14px">Depois</span>', match: (t) => t.due_date > wk, preset: {}, hideEmpty: true },
+      { id: 'past', head: '<span class="h-card muted" style="font-size:14px">Prazo passado (concluídas)</span>', match: (t) => t.due_date && t.due_date < t0 && isDone(t), preset: {}, hideEmpty: true },
+      { id: 'none', head: '<span class="h-card muted" style="font-size:14px">Sem prazo</span>', match: (t) => !t.due_date, preset: {} },
+    ];
+  }
+  if (g === 'list') return viewLists(tasks).map((l) => ({
+    id: l.id, head: `${icon('list', 'sm')}<span class="h-card" style="font-size:14px">${esc(l.name)}</span><span class="faint caption">${esc(spaceById(l.space_id)?.name || '')}</span>`,
+    match: (t) => t.list_id === l.id, preset: { list_id: l.id },
+  }));
+  return [{ id: 'all', head: '<span class="h-card" style="font-size:14px">Todas as tarefas</span>', match: () => true, preset: {} }];
+}
+
 function listView() {
   const r = S.route;
   const tasks = filtered(S.tasks);
-  const statuses = viewStatuses(S.tasks);
   const canAdd = r.name !== 'minhas' && defaultListForView();
   const empty = emptyState();
   if (empty && !tasks.length) return empty;
   const multi = r.name !== 'lista';
-  return `<div class="page">${statuses.map((st) => {
-    const rows = tasks.filter((t) => t.status === st.id);
-    if (!rows.length && (!canAdd || (!S.filters.showDone && st.type === 'done'))) return '';
-    const key = r.id + ':' + st.id;
-    return `<section class="group ${collapsedGroups.has(key) ? 'collapsed' : ''}" data-drop-status="${esc(st.id)}">
+  return `<div class="page ${S.selected.size ? 'selecting' : ''}">${listGroups(tasks).map((grp) => {
+    const rows = tasks.filter(grp.match);
+    if (!rows.length && (!canAdd || grp.hideEmpty)) return '';
+    const key = (r.id || r.name) + ':' + S.filters.group + ':' + grp.id;
+    const preset = esc(JSON.stringify(grp.preset));
+    return `<section class="group ${collapsedGroups.has(key) ? 'collapsed' : ''}" ${grp.drop ? `data-drop-status="${esc(grp.drop)}"` : ''}>
       <div class="group-head">
         <button class="icon-btn" style="width:22px;height:22px" data-act="toggle-group" data-key="${esc(key)}" aria-label="Recolher">${icon('chevron', 'sm caret')}</button>
-        ${statusPill(st)}<span class="count">${rows.length}</span>
+        ${grp.head}<span class="count">${rows.length}</span>
+        ${rows.length ? `<button class="btn btn-text btn-sm group-select" data-act="select-group" data-ids="${esc(rows.map((t) => t.id).join(','))}">Selecionar</button>` : ''}
       </div>
       <div class="rows">
         ${rows.length ? `<div class="row-head"><span>Nome</span><span>Responsável</span><span>Prazo</span><span>Prioridade</span><span>Status</span><span></span></div>` : ''}
         ${rows.map((t) => rowHtml(t, { showList: multi })).join('')}
-        ${canAdd ? `<div class="add-row">${icon('plus', 'sm')}<input data-quick-add="${esc(st.id)}" placeholder="Adicionar tarefa e pressionar Enter" aria-label="Nova tarefa em ${esc(st.name)}"></div>` : ''}
+        ${canAdd ? `<div class="add-row">${icon('plus', 'sm')}<input data-quick-add="${preset}" placeholder="Adicionar tarefa e pressionar Enter" aria-label="Nova tarefa"></div>` : ''}
       </div>
     </section>`;
   }).join('') || `<div class="empty"><div class="h-card">Nenhuma tarefa encontrada</div><p>Ajuste os filtros ou crie uma nova tarefa.</p></div>`}</div>`;
+}
+
+// ---------- ações em massa ----------
+function renderBulkBar() {
+  let bar = document.querySelector('.bulkbar');
+  for (const id of [...S.selected]) if (!S.tasks.some((t) => t.id === id)) S.selected.delete(id);
+  const n = S.selected.size;
+  if (!n || !TASK_ROUTES.includes(S.route.name)) {
+    if (bar && !bar.classList.contains('leaving')) { bar.classList.add('leaving'); setTimeout(() => bar.remove(), 160); }
+    return;
+  }
+  if (!bar || bar.classList.contains('leaving')) { bar?.remove(); bar = document.createElement('div'); bar.className = 'bulkbar'; bar.setAttribute('role', 'toolbar'); document.body.append(bar); }
+  bar.innerHTML = `<span class="n">${n} selecionada${n > 1 ? 's' : ''}</span>
+    <button class="chip-btn" data-bulk="status">${icon('check', 'sm')}Status</button>
+    <button class="chip-btn" data-bulk="assignee">${icon('user', 'sm')}Responsável</button>
+    <button class="chip-btn" data-bulk="priority">${icon('flag', 'sm')}Prioridade</button>
+    <label class="chip-btn">${icon('calendar', 'sm')}Prazo<input type="date" class="sr-only" data-bulk-date></label>
+    <button class="chip-btn" data-bulk="move">${icon('move', 'sm')}Mover</button>
+    <button class="chip-btn" data-bulk="archive">${icon('archive', 'sm')}Arquivar</button>
+    <button class="chip-btn danger" data-bulk="delete">${icon('trash', 'sm')}Excluir</button>
+    <button class="icon-btn" data-bulk="clear" aria-label="Limpar seleção">${icon('x', 'sm')}</button>`;
+  if (!bar.dataset.bound) {
+    bar.dataset.bound = '1';
+    bar.addEventListener('click', (e) => {
+      const lbl = e.target.closest('label.chip-btn');
+      if (lbl) { const inp = lbl.querySelector('input'); try { inp.showPicker(); } catch { inp.focus(); } return; }
+      const b = e.target.closest('[data-bulk]');
+      if (b) bulkAction(b.dataset.bulk, b);
+    });
+    bar.addEventListener('change', (e) => { if (e.target.matches('[data-bulk-date]')) bulkApply((t) => ({ due_date: e.target.value || null }), 'Prazo atualizado'); });
+  }
+}
+async function bulkApply(makePatch, msg) {
+  const tasks = [...S.selected].map(taskOf).filter(Boolean);
+  let ok = 0, skipped = 0;
+  await Promise.all(tasks.map(async (t) => {
+    const p = makePatch(t);
+    if (!p) { skipped++; return; }
+    try { await api('PATCH', `/api/tasks/${t.id}`, { ...p, force: true }); ok++; } catch { skipped++; }
+  }));
+  await loadTasks(); renderContent();
+  toast(`${msg}: ${ok} tarefa${ok !== 1 ? 's' : ''}${skipped ? ` (${skipped} sem alteração)` : ''}`);
+}
+function bulkAction(kind, anchor) {
+  const tasks = [...S.selected].map(taskOf).filter(Boolean);
+  if (kind === 'clear') { S.selected.clear(); renderContent(); return; }
+  if (kind === 'status') {
+    const sts = viewStatuses(tasks);
+    menuPopover(anchor, {
+      items: () => sts.map((s) => ({ id: s.id, html: statusPill(s) })),
+      onPick: (id) => {
+        const name = sts.find((s) => s.id === id)?.name.toLowerCase();
+        bulkApply((t) => { const l = listById(t.list_id); const m = l.statuses.find((s) => s.id === id) || l.statuses.find((s) => s.name.toLowerCase() === name); return m ? { status: m.id } : null; }, 'Status alterado');
+      },
+    });
+  }
+  if (kind === 'assignee') menuPopover(anchor, {
+    search: true,
+    items: () => [{ label: 'Adicionar responsável' }, ...S.users.filter((u) => u.active).map((u) => ({ id: u.id, text: u.name, html: `${avatar(u)}${esc(u.name)}` })),
+      { sep: true }, { id: '__clear', text: 'remover', html: '<span class="muted">Remover todos os responsáveis</span>' }],
+    onPick: (id) => bulkApply((t) => ({ assignees: id === '__clear' ? [] : [...new Set([...t.assignees, id])] }), 'Responsáveis atualizados'),
+  });
+  if (kind === 'priority') menuPopover(anchor, {
+    items: () => [...Object.keys(PRIORITY).map((k) => ({ id: k, html: prioHtml(k) })), { sep: true }, { id: '', html: '<span class="muted">Sem prioridade</span>' }],
+    onPick: (id) => bulkApply(() => ({ priority: id || null }), 'Prioridade alterada'),
+  });
+  if (kind === 'move') menuPopover(anchor, {
+    search: true, width: 280,
+    items: () => S.spaces.flatMap((s) => { const ls = S.lists.filter((l) => l.space_id === s.id); return ls.length ? [{ label: s.name }, ...ls.map((l) => ({ id: l.id, text: s.name + ' ' + l.name, html: esc(l.name) }))] : []; }),
+    onPick: async (id) => { await bulkApply((t) => (t.list_id === id ? null : { list_id: id }), 'Movidas para ' + listById(id).name); S.selected.clear(); renderContent(); },
+  });
+  if (kind === 'archive') { bulkApply(() => ({ archived: true }), 'Arquivadas').then(() => { S.selected.clear(); renderContent(); }); }
+  if (kind === 'delete') {
+    confirmDialog(`Excluir ${tasks.length} tarefa${tasks.length > 1 ? 's' : ''}?`, 'Elas e suas subtarefas, comentários e anexos serão apagados para sempre.', { ok: 'Excluir', danger: true }).then(async (yes) => {
+      if (!yes) return;
+      await Promise.all(tasks.map((t) => api('DELETE', `/api/tasks/${t.id}`).catch(() => {})));
+      S.selected.clear(); await loadTasks(); renderContent(); toast('Tarefas excluídas');
+    });
+  }
 }
 
 function cardHtml(t) {
@@ -503,7 +702,7 @@ function cardHtml(t) {
   const total = t.checklist.total + t.subtasks.total, dn = t.checklist.done + t.subtasks.done;
   const r = S.route;
   return `<article class="card ${done ? 'done' : ''}" data-task="${t.id}" data-drag="${t.id}" draggable="true">
-    ${r.name !== 'lista' ? `<span class="caption faint">${esc(listById(t.list_id)?.name || '')}</span>` : ''}
+    ${r.name !== 'lista' || (t.blocked && !done) ? `<span class="caption faint" style="display:flex;gap:6px;align-items:center">${t.blocked && !done ? `<span class="blocked" title="Esperando outra tarefa">${icon('lock', 'sm')}</span>` : ''}${r.name !== 'lista' ? esc(listById(t.list_id)?.name || '') : 'Aguardando'}</span>` : ''}
     ${t.tags.length ? `<div class="card-tags">${t.tags.map((id) => tagHtml(tagById(id))).join('')}</div>` : ''}
     <div class="t">${esc(t.title)}</div>
     ${total ? `<div class="progress" title="${dn}/${total} itens"><i style="width:${Math.round((dn / total) * 100)}%"></i></div>` : ''}
@@ -564,6 +763,152 @@ function calendarView() {
           ${list.length > 4 ? `<button class="cal-more" data-act="cal-more" data-date="${k}">+${list.length - 4} mais</button>` : ''}
         </div>`;
       }).join('')}
+    </div>
+  </div>`;
+}
+
+// ---------- linha do tempo (Gantt) ----------
+const TL_DAY = 36, TL_DAYS = 42;
+function tlStartDate() {
+  if (!S.tlStart) { const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - 7); S.tlStart = ymd(d); }
+  return S.tlStart;
+}
+const dayDiff = (a, b) => Math.round((Date.parse(b + 'T12:00:00') - Date.parse(a + 'T12:00:00')) / 864e5);
+function timelineView() {
+  const tasks = filtered(S.tasks);
+  const empty = emptyState();
+  if (empty && !tasks.length) return empty;
+  const start = tlStartDate(), t0 = today();
+  const days = Array.from({ length: TL_DAYS }, (_, i) => addDays(start, i));
+  const dated = tasks.filter((t) => t.start_date || t.due_date).sort((a, b) => ((a.start_date || a.due_date) < (b.start_date || b.due_date) ? -1 : 1));
+  const undated = tasks.filter((t) => !t.start_date && !t.due_date && !isDone(t));
+  const W = TL_DAY * TL_DAYS;
+  const months = [];
+  for (const d of days) { const k = d.slice(0, 7); if (!months.length || months[months.length - 1].k !== k) months.push({ k, n: 0, m: +d.slice(5, 7) - 1 }); months[months.length - 1].n++; }
+  const todayX = dayDiff(start, t0) * TL_DAY;
+  const row = (t) => {
+    const s = t.start_date || t.due_date, e = t.due_date || t.start_date;
+    const a = dayDiff(start, s < e ? s : e), b = dayDiff(start, s < e ? e : s) + 1;
+    const visible = b > 0 && a < TL_DAYS;
+    const st = statusOf(t);
+    return `<div class="tl-row" data-task="${t.id}">
+      <div class="tl-name"><input type="checkbox" class="check" data-act="toggle-done-task" data-id="${t.id}" ${isDone(t) ? 'checked' : ''} aria-label="Concluir" data-stop>
+        <span class="ellipsis ${isDone(t) ? 'faint' : ''}">${esc(t.title)}</span>${avatars(t.assignees, 2)}</div>
+      <div class="tl-track" style="width:${W}px" data-tl-track="${t.id}" data-stop>
+        ${visible ? `<div class="tl-bar ${isDone(t) ? 'done' : ''}" data-tl-bar="${t.id}" style="left:${a * TL_DAY}px;width:${(b - a) * TL_DAY - 4}px;--c:${esc(st.color)}" title="${esc(t.title)} · ${fmtDate(s)} → ${fmtDate(e)}">
+          <span class="tl-edge l" data-edge="start"></span><span class="ellipsis">${esc(t.title)}</span><span class="tl-edge r" data-edge="end"></span></div>`
+          : `<span class="tl-off caption faint" style="left:${a < 0 ? 8 : W - 140}px">${a < 0 ? '← ' + fmtDate(e) : fmtDate(s) + ' →'}</span>`}
+      </div></div>`;
+  };
+  return `<div class="tl">
+    <div class="cal-head" style="padding:0 0 12px">
+      <button class="icon-btn" data-act="tl-prev" aria-label="Semana anterior">${icon('chevronLeft')}</button>
+      <button class="icon-btn" data-act="tl-next" aria-label="Próxima semana">${icon('chevronRight')}</button>
+      <button class="btn btn-ghost btn-sm" data-act="tl-today">Hoje</button>
+      <span class="caption faint" style="margin-left:8px">Arraste as barras para mudar as datas. Puxe as pontas para alongar.</span>
+    </div>
+    <div class="tl-scroll">
+      <div class="tl-inner" style="width:calc(${W}px + var(--name-w))">
+        <div class="tl-head">
+          <div class="tl-name tl-corner"><span class="eyebrow">Tarefa</span></div>
+          <div style="width:${W}px">
+            <div class="tl-months">${months.map((m) => `<span style="width:${m.n * TL_DAY}px">${MONTHS_FULL[m.m]}</span>`).join('')}</div>
+            <div class="tl-days">${days.map((d) => { const wd = new Date(d + 'T12:00:00').getDay(); return `<span class="${d === t0 ? 'today' : ''} ${wd === 0 || wd === 6 ? 'we' : ''}" style="width:${TL_DAY}px">${+d.slice(8)}</span>`; }).join('')}</div>
+          </div>
+        </div>
+        <div class="tl-body" style="--today:${todayX}px;--w:${W}px">
+          <div class="tl-grid" style="width:${W}px">${days.map((d) => { const wd = new Date(d + 'T12:00:00').getDay(); return `<span class="${wd === 0 || wd === 6 ? 'we' : ''}" style="width:${TL_DAY}px"></span>`; }).join('')}</div>
+          ${todayX >= 0 && todayX < W ? `<div class="tl-today" style="left:calc(var(--name-w) + ${todayX + TL_DAY / 2}px)"></div>` : ''}
+          ${dated.map(row).join('')}
+          ${undated.length ? `<div class="tl-section"><span class="eyebrow">Sem datas · clique na linha do dia para agendar</span></div>${undated.map(row).join('')}` : ''}
+          ${!dated.length && !undated.length ? '<div class="empty">Nenhuma tarefa para mostrar</div>' : ''}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Arraste das barras: segue o ponteiro 1:1 (respeitando onde foi pego) e encaixa no dia ao soltar.
+function bindTimeline() {
+  let d = null;
+  document.addEventListener('pointerdown', (e) => {
+    const track = e.target.closest('.tl-track');
+    if (!track || e.button !== 0) return;
+    const bar = e.target.closest('.tl-bar');
+    const t = taskOf(track.dataset.tlTrack);
+    if (!t) return;
+    if (!bar) {
+      if (t.start_date || t.due_date) return;
+      const day = addDays(tlStartDate(), Math.floor((e.clientX - track.getBoundingClientRect().left) / TL_DAY));
+      patchTask(t.id, { start_date: day, due_date: day }).catch(() => {});
+      return;
+    }
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    const edge = e.target.closest('[data-edge]')?.dataset.edge || 'move';
+    d = { t, bar, edge, x0: e.clientX, left: bar.offsetLeft, width: bar.offsetWidth, moved: false, id: e.pointerId };
+    bar.classList.add('dragging');
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!d || e.pointerId !== d.id) return;
+    const dx = e.clientX - d.x0;
+    if (!d.moved && Math.abs(dx) < 4) return;
+    d.moved = true;
+    if (d.edge === 'move') d.bar.style.left = d.left + dx + 'px';
+    else if (d.edge === 'end') d.bar.style.width = Math.max(TL_DAY - 4, d.width + dx) + 'px';
+    else { const w = Math.max(TL_DAY - 4, d.width - dx); d.bar.style.left = d.left + (d.width - w) + 'px'; d.bar.style.width = w + 'px'; }
+  });
+  const end = (e) => {
+    if (!d || e.pointerId !== d.id) return;
+    const { t, bar, edge, moved } = d; d = null;
+    bar.classList.remove('dragging');
+    if (!moved) { go(taskHash(t.id)); return; }
+    const start = tlStartDate();
+    const a = Math.round(bar.offsetLeft / TL_DAY), n = Math.max(1, Math.round((bar.offsetWidth + 4) / TL_DAY));
+    // encaixa no dia mais próximo com uma transição curta, partindo de onde a barra está
+    bar.style.left = a * TL_DAY + 'px'; bar.style.width = n * TL_DAY - 4 + 'px';
+    const s = addDays(start, a), en = addDays(start, a + n - 1);
+    const patch = edge === 'move' || edge === 'start' ? { start_date: s, due_date: en } : { start_date: t.start_date || s, due_date: en };
+    if (!t.start_date && edge === 'end') patch.start_date = s;
+    if (patch.start_date !== t.start_date || patch.due_date !== t.due_date) setTimeout(() => patchTask(t.id, patch).catch(() => {}), 180);
+  };
+  document.addEventListener('pointerup', end);
+  document.addEventListener('pointercancel', end);
+  document.addEventListener('scroll', (e) => { if (e.target.classList?.contains('tl-scroll')) S.tlScroll = e.target.scrollLeft; }, true);
+}
+
+// ---------- carga de trabalho da equipe ----------
+function workloadView() {
+  const t0 = today();
+  const days = Array.from({ length: 7 }, (_, i) => addDays(t0, i));
+  const open = S.tasks.filter((t) => !t.archived && !isDone(t));
+  const users = S.users.filter((u) => u.active);
+  const logBy = {};
+  for (const e of S.timeLog) logBy[e.user_id] = (logBy[e.user_id] || 0) + e.minutes;
+  const WD = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  const cell = (u, key, list) => {
+    const est = list.reduce((m, t) => m + (t.time_estimate || 0), 0);
+    const heavy = list.length >= 5 || est > 8 * 60;
+    return `<button class="wl-cell ${list.length ? 'has' : ''} ${heavy ? 'heavy' : ''} ${key === 'late' && list.length ? 'late' : ''}" data-act="wl-cell" data-user="${u ? u.id : '__none'}" data-key="${key}" ${list.length ? '' : 'disabled'}
+      style="--lvl:${Math.min(1, list.length / 5)}"><b>${list.length || '·'}</b>${est ? `<span>${fmtMinutes(est)}</span>` : ''}</button>`;
+  };
+  const bucket = (u, key) => open.filter((t) => (u ? t.assignees.includes(u.id) : !t.assignees.length)
+    && (key === 'late' ? t.due_date && t.due_date < t0 : key === 'none' ? !t.due_date : key === 'later' ? t.due_date > days[6] : t.due_date === key));
+  const rows = [...users, null].map((u) => {
+    const mine = open.filter((t) => (u ? t.assignees.includes(u.id) : !t.assignees.length));
+    if (!u && !mine.length) return '';
+    const est = mine.reduce((m, t) => m + (t.time_estimate || 0), 0);
+    return `<div class="wl-row"><div class="wl-who">${u ? `${avatar(u, 'md')}<span class="ellipsis">${esc(u.name)}</span>` : `<span class="avatar-empty">${icon('user', 'sm')}</span><span class="muted">Sem responsável</span>`}</div>
+      ${cell(u, 'late', bucket(u, 'late'))}${days.map((d) => cell(u, d, bucket(u, d))).join('')}${cell(u, 'later', bucket(u, 'later'))}${cell(u, 'none', bucket(u, 'none'))}
+      <div class="wl-total"><b>${mine.length}</b><span class="faint caption">${est ? fmtMinutes(est) + ' est.' : '—'}</span></div>
+      <div class="wl-total"><b>${u && logBy[u.id] ? fmtMinutes(logBy[u.id]) : '—'}</b></div></div>`;
+  }).join('');
+  return `<div class="page-narrow" style="max-width:1280px">
+    <h1 class="h-display" style="margin-bottom:8px">Carga da equipe</h1>
+    <p class="muted" style="margin:0 0 24px">Tarefas abertas de cada pessoa por prazo, com a estimativa de horas. Células destacadas indicam dia pesado (5+ tarefas ou mais de 8h estimadas).</p>
+    <div class="wl">
+      <div class="wl-row wl-head"><div class="wl-who eyebrow">Pessoa</div><span>Atrasadas</span>${days.map((d, i) => `<span class="${i === 0 ? 'today' : ''}">${i === 0 ? 'Hoje' : WD[new Date(d + 'T12:00:00').getDay()]}<small>${+d.slice(8)}/${+d.slice(5, 7)}</small></span>`).join('')}<span>Depois</span><span>Sem prazo</span><span>Total aberto</span><span>Registrado 7 dias</span></div>
+      ${rows}
     </div>
   </div>`;
 }
@@ -718,7 +1063,27 @@ function newSpaceDialog(space) {
   });
 }
 
-function newListDialog(spaceId, list) {
+function newFolderDialog(spaceId, folder) {
+  dialog(`<h2 class="h-section">${folder ? 'Renomear pasta' : 'Nova pasta'}</h2>
+    <p class="muted" style="margin:0">${folder ? '' : 'Pastas agrupam listas dentro de um espaço, por exemplo um job ou uma campanha com várias entregas.'}</p>
+    <form style="display:flex;flex-direction:column;gap:16px">
+      <div class="field"><label for="fo-name">Nome</label><input class="input" id="fo-name" name="name" value="${esc(folder?.name || '')}" placeholder="Ex.: Campanha de Verão" required></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-text" data-close>Cancelar</button><button class="btn btn-primary" type="submit">${folder ? 'Salvar' : 'Criar pasta'}</button></div>
+    </form>`, (m, close) => {
+    m.querySelector('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = e.target.name.value.trim();
+      if (!name) return;
+      try {
+        if (folder) await api('PATCH', `/api/folders/${folder.id}`, { name });
+        else { const f = await api('POST', '/api/folders', { space_id: spaceId, name }); collapsedSpaces.delete(spaceId); await loadBootstrap(); close(); newListDialog(spaceId, null, f.id); renderSidebar(); return; }
+        await loadBootstrap(); renderSidebar(); renderTop(); close();
+      } catch (ex) { fail(ex); }
+    });
+  });
+}
+
+function newListDialog(spaceId, list, folderId = null) {
   dialog(`<h2 class="h-section">${list ? 'Renomear lista' : 'Nova lista'}</h2>
     <form style="display:flex;flex-direction:column;gap:16px">
       <div class="field"><label for="l-name">Nome</label><input class="input" id="l-name" name="name" value="${esc(list?.name || '')}" placeholder="Ex.: Social media, Campanha de Natal" required></div>
@@ -730,8 +1095,9 @@ function newListDialog(spaceId, list) {
       if (!name) return;
       try {
         if (list) { await api('PATCH', `/api/lists/${list.id}`, { name }); await loadBootstrap(); renderSidebar(); renderTop(); close(); return; }
-        const l = await api('POST', '/api/lists', { space_id: spaceId, name });
+        const l = await api('POST', '/api/lists', { space_id: spaceId, name, folder_id: folderId });
         collapsedSpaces.delete(spaceId);
+        if (folderId) collapsedSpaces.delete(folderId);
         await loadBootstrap(); close(); go(`#/lista/${l.id}/lista`);
       } catch (ex) { fail(ex); }
     });
@@ -892,13 +1258,62 @@ const ACTIONS = {
   nav: () => document.querySelector('.app').classList.toggle('nav-open'),
   palette: openPalette,
   'new-space': () => newSpaceDialog(),
-  'new-list': (el) => newListDialog(el.dataset.id),
+  'new-list': (el) => newListDialog(el.dataset.id, null, el.dataset.folder || null),
+  'new-in-space': (el) => menuPopover(el, {
+    items: () => [{ id: 'list', html: `${icon('list', 'sm')}Nova lista` }, { id: 'folder', html: `${icon('folder', 'sm')}Nova pasta` }],
+    onPick: (id) => (id === 'list' ? newListDialog(el.dataset.id) : newFolderDialog(el.dataset.id)),
+  }),
+  'folder-menu': (el) => {
+    const f = folderById(el.dataset.id);
+    menuPopover(el, {
+      items: () => [
+        { id: 'new-list', html: `${icon('plus', 'sm')}Nova lista na pasta` },
+        { id: 'rename', html: `${icon('edit', 'sm')}Renomear` },
+        { sep: true },
+        { id: 'delete', danger: true, html: `${icon('trash', 'sm')}Excluir pasta` },
+      ],
+      onPick: async (id) => {
+        if (id === 'new-list') newListDialog(f.space_id, null, f.id);
+        if (id === 'rename') newFolderDialog(f.space_id, f);
+        if (id === 'delete' && await confirmDialog('Excluir pasta?', `As listas de “${f.name}” não serão apagadas: elas voltam para a raiz do espaço.`, { ok: 'Excluir pasta', danger: true })) {
+          try { await api('DELETE', `/api/folders/${f.id}`); await loadBootstrap(); if (S.route.id === f.id) go('#/espaco/' + f.space_id + '/lista'); renderSidebar(); } catch (e) { fail(e); }
+        }
+      },
+    });
+  },
+  group: (el) => menuPopover(el, {
+    items: () => Object.entries(GROUPS).map(([k, v]) => ({ id: k, selected: S.filters.group === k, html: v })),
+    onPick: (id) => { S.filters.group = id; store.set('group:' + (S.route.id || S.route.name), id); renderTop(); renderContent(); },
+  }),
+  select: (el) => {
+    const id = el.dataset.id;
+    S.selected.has(id) ? S.selected.delete(id) : S.selected.add(id);
+    renderContent();
+  },
+  'select-group': (el) => {
+    const ids = el.dataset.ids.split(',');
+    const all = ids.every((i) => S.selected.has(i));
+    for (const i of ids) all ? S.selected.delete(i) : S.selected.add(i);
+    renderContent();
+  },
+  'timer-stop': async () => {
+    try { await api('POST', '/api/timer/stop'); S.timer = null; renderSidebar(); await loadTasks(); renderContent(); if (currentTaskId()) refreshTask(); toast('Tempo registrado'); } catch (e) { fail(e); }
+  },
+  'tl-prev': () => { S.tlStart = addDays(tlStartDate(), -7); renderContent(); },
+  'tl-next': () => { S.tlStart = addDays(tlStartDate(), 7); renderContent(); },
+  'tl-today': () => { S.tlStart = null; S.tlScroll = 0; renderContent(); },
+  'wl-cell': (el) => {
+    const t0 = today(), last = addDays(t0, 6), key = el.dataset.key, uidv = el.dataset.user;
+    const list = S.tasks.filter((t) => !t.archived && !isDone(t) && (uidv === '__none' ? !t.assignees.length : t.assignees.includes(uidv))
+      && (key === 'late' ? t.due_date && t.due_date < t0 : key === 'none' ? !t.due_date : key === 'later' ? t.due_date > last : t.due_date === key));
+    menuPopover(el, { width: 300, items: () => list.map((t) => ({ id: t.id, html: `${statusPill(statusOf(t))}<span class="ellipsis">${esc(t.title)}</span>${t.time_estimate ? `<span class="faint caption" style="margin-left:auto">${fmtMinutes(t.time_estimate)}</span>` : ''}` })), onPick: (id) => go(taskHash(id)) });
+  },
   'new-task': () => newTaskDialog(),
   'toggle-space': (el) => {
     const id = el.dataset.id;
     collapsedSpaces.has(id) ? collapsedSpaces.delete(id) : collapsedSpaces.add(id);
     store.set('collapsedSpaces', [...collapsedSpaces]);
-    el.closest('.space').classList.toggle('collapsed');
+    el.closest('.folder, .space').classList.toggle('collapsed');
   },
   'toggle-group': (el) => {
     const k = el.dataset.key;
@@ -910,11 +1325,13 @@ const ACTIONS = {
     menuPopover(el, {
       items: () => [
         { id: 'new-list', text: '', html: `${icon('plus', 'sm')}Nova lista` },
+        { id: 'new-folder', text: '', html: `${icon('folder', 'sm')}Nova pasta` },
         { id: 'edit', text: '', html: `${icon('edit', 'sm')}Editar espaço` },
         ...(S.me.role === 'admin' ? [{ sep: true }, { id: 'delete', danger: true, html: `${icon('trash', 'sm')}Excluir espaço` }] : []),
       ],
       onPick: async (id) => {
         if (id === 'new-list') newListDialog(s.id);
+        if (id === 'new-folder') newFolderDialog(s.id);
         if (id === 'edit') newSpaceDialog(s);
         if (id === 'delete' && await confirmDialog('Excluir espaço?', `“${s.name}” e todas as suas listas deixarão de aparecer para a equipe.`, { ok: 'Excluir', danger: true })) {
           try { await api('DELETE', `/api/spaces/${s.id}`); await loadBootstrap(); if (S.route.id === s.id || listById(S.route.id) === undefined) go('#/inicio'); renderSidebar(); renderContent(); } catch (e) { fail(e); }
@@ -930,6 +1347,7 @@ const ACTIONS = {
         { id: 'fav', html: `${icon('star', 'sm')}${fav ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}` },
         { id: 'rename', html: `${icon('edit', 'sm')}Renomear` },
         { id: 'statuses', html: `${icon('settings', 'sm')}Editar status` },
+        { id: 'folder', html: `${icon('folder', 'sm')}Mover para pasta` },
         { sep: true },
         { id: 'delete', danger: true, html: `${icon('trash', 'sm')}Excluir lista` },
       ],
@@ -937,6 +1355,14 @@ const ACTIONS = {
         if (id === 'fav') ACTIONS.fav({ dataset: { id: l.id } });
         if (id === 'rename') newListDialog(l.space_id, l);
         if (id === 'statuses') statusesDialog(l);
+        if (id === 'folder') setTimeout(() => menuPopover(el, {
+          items: () => [...S.folders.filter((f) => f.space_id === l.space_id).map((f) => ({ id: f.id, selected: l.folder_id === f.id, html: `${icon('folder', 'sm')}${esc(f.name)}` })),
+            { sep: true }, { id: '__root', selected: !l.folder_id, html: '<span class="muted">Fora de pastas</span>' }, { id: '__new', html: `${icon('plus', 'sm')}Nova pasta` }],
+          onPick: async (fid) => {
+            if (fid === '__new') return newFolderDialog(l.space_id);
+            try { await api('PATCH', `/api/lists/${l.id}`, { folder_id: fid === '__root' ? null : fid }); await loadBootstrap(); renderSidebar(); } catch (e) { fail(e); }
+          },
+        }), 0);
         if (id === 'delete' && await confirmDialog('Excluir lista?', `“${l.name}” e suas tarefas deixarão de aparecer.`, { ok: 'Excluir', danger: true })) {
           try { await api('DELETE', `/api/lists/${l.id}`); await loadBootstrap(); if (S.route.id === l.id) go('#/inicio'); renderSidebar(); } catch (e) { fail(e); }
         }
@@ -1056,12 +1482,14 @@ function bindGlobal() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
     const qa = e.target.closest?.('[data-quick-add]');
     if (qa && e.key === 'Enter' && qa.value.trim()) {
-      const list = defaultListForView();
+      let preset = {};
+      try { preset = JSON.parse(qa.dataset.quickAdd); } catch { preset = { status: qa.dataset.quickAdd }; }
+      const list = (preset.list_id && listById(preset.list_id)) || defaultListForView();
       if (!list) return;
       const title = qa.value; qa.value = '';
-      const status = list.statuses.some((s) => s.id === qa.dataset.quickAdd) ? qa.dataset.quickAdd : undefined;
+      if (preset.status && !list.statuses.some((s) => s.id === preset.status)) delete preset.status;
       try {
-        await createTask({ title, list_id: list.id, status });
+        await createTask({ ...preset, title, list_id: list.id });
         document.querySelector(`[data-quick-add="${CSS.escape(qa.dataset.quickAdd)}"]`)?.focus();
       } catch (ex) { fail(ex); qa.value = title; }
     }
@@ -1075,6 +1503,7 @@ function bindGlobal() {
   });
   bindDnd();
   bindDrawer();
+  bindTimeline();
 }
 
 // ---------- arrastar e soltar ----------
@@ -1215,6 +1644,7 @@ function connectEvents() {
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(async () => {
         if (S.route.name === 'entrada' || S.route.name === 'membros' || S.route.name === 'perfil') { /* nada */ }
+        else if (document.querySelector('.tl-bar.dragging')) { /* não interrompe um arraste */ }
         else if (!document.querySelector('.content [data-quick-add]:focus, .content [data-filter-q]:focus, .dragging')) { try { await loadTasks(); renderContent(); } catch { /* offline */ } }
         if (ev.task_id && currentTaskId() && !taskIsBusy()) refreshTask();
       }, 350);

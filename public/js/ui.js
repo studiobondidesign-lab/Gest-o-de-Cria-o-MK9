@@ -39,6 +39,13 @@ const PATHS = {
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   sort: '<path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/>',
   eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  timeline: '<path d="M3 6h9M7 12h11M5 18h7"/><rect x="3" y="4" width="9" height="4" rx="2"/><rect x="7" y="10" width="11" height="4" rx="2"/><rect x="5" y="16" width="7" height="4" rx="2"/>',
+  layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  play: '<path d="M7 4.5v15l13-7.5z"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  pin: '<path d="M12 21s-7-6.3-7-11.5A7 7 0 0 1 19 9.5C19 14.7 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
   folder: '<path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>',
 };
 export const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${PATHS[name] || ''}</svg>`;
@@ -96,7 +103,9 @@ export async function api(method, url, body, opts = {}) {
   try { data = await res.json(); } catch { /* sem corpo */ }
   if (!res.ok) {
     if (res.status === 401 && !opts.quiet401) onUnauthorized();
-    throw new ApiError(res.status, data?.error || 'Algo deu errado');
+    const err = new ApiError(res.status, data?.error || 'Algo deu errado');
+    err.code = data?.code;
+    throw err;
   }
   return data;
 }
