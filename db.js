@@ -59,9 +59,14 @@ CREATE TABLE IF NOT EXISTS time_entries (
 );
 CREATE INDEX IF NOT EXISTS idx_time_task ON time_entries(task_id);
 CREATE INDEX IF NOT EXISTS idx_time_user ON time_entries(user_id, ended_at);
+CREATE INDEX IF NOT EXISTS idx_lists_space ON lists(space_id);
+CREATE INDEX IF NOT EXISTS idx_assignees_user ON task_assignees(user_id);
+CREATE INDEX IF NOT EXISTS idx_checklist_task ON checklist_items(task_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_task ON attachments(task_id);
 CREATE TABLE IF NOT EXISTS task_dependencies (
   task_id TEXT NOT NULL, depends_on TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (task_id, depends_on)
 );
+CREATE INDEX IF NOT EXISTS idx_deps_on ON task_dependencies(depends_on);
 `;
 
 // Colunas adicionadas depois da primeira versão (bancos já existentes recebem via ALTER TABLE)

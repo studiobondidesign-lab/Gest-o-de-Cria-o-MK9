@@ -3,6 +3,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 
@@ -69,9 +70,12 @@ async function readJson(req) {
   if (!buf.length) return {};
   try { return JSON.parse(buf.toString('utf8')); } catch { bad('JSON inválido'); }
 }
+// Respostas acima de 1 KB vão comprimidas: a lista de tarefas cai de ~1 MB para ~60 KB
 function send(res, status, data, headers = {}) {
-  const body = data === undefined ? '' : JSON.stringify(data);
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
+  let body = data === undefined ? '' : JSON.stringify(data);
+  const h = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', Vary: 'Accept-Encoding', ...headers };
+  if (res.gzipOk && body.length > 1024) { body = zlib.gzipSync(body, { level: 6 }); h['Content-Encoding'] = 'gzip'; }
+  res.writeHead(status, h);
   res.end(body);
 }
 const str = (v, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
@@ -845,16 +849,30 @@ route('GET', '/api/events', ({ req, res }) => {
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.json': 'application/json' };
 
+// Arquivos do app: ETag para revalidar sem baixar de novo e gzip guardado em memória
+const staticCache = new Map();
 function serveStatic(req, res, pathname) {
   let file = path.normalize(path.join(PUBLIC_DIR, decodeURIComponent(pathname)));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
   if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(PUBLIC_DIR, 'index.html');
-  res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': file.endsWith('index.html') ? 'no-cache' : 'public, max-age=300' });
+  const st = fs.statSync(file);
+  const etag = `"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+  const type = MIME[path.extname(file)] || 'application/octet-stream';
+  const headers = { 'Content-Type': type, ETag: etag, Vary: 'Accept-Encoding', 'Cache-Control': file.endsWith('index.html') ? 'no-cache' : 'public, max-age=300, stale-while-revalidate=86400' };
+  if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end(); }
+  if (res.gzipOk && /^(text|application\/json|image\/svg)/.test(type)) {
+    let c = staticCache.get(file);
+    if (!c || c.etag !== etag) { c = { etag, gz: zlib.gzipSync(fs.readFileSync(file), { level: 9 }) }; staticCache.set(file, c); }
+    res.writeHead(200, { ...headers, 'Content-Encoding': 'gzip', 'Content-Length': c.gz.length });
+    return res.end(c.gz);
+  }
+  res.writeHead(200, { ...headers, 'Content-Length': st.size });
   fs.createReadStream(file).pipe(res);
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  res.gzipOk = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'same-origin');
   if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);

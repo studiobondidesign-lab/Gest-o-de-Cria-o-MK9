@@ -19,6 +19,15 @@ const store = {
 };
 const collapsedSpaces = new Set(store.get('collapsedSpaces', []));
 const collapsedGroups = new Set();
+// Listas grandes aparecem aos poucos, como o "Carregar mais" do ClickUp: montar milhares de linhas trava a tela
+const PAGE_ROWS = 100, PAGE_CARDS = 50;
+const shownRows = new Map();
+const moreButton = (key, total, page) => {
+  const lim = shownRows.get(key) || page;
+  if (total <= lim) return '';
+  const rest = total - lim;
+  return `<button class="show-more" data-act="show-more" data-key="${esc(key)}" data-page="${page}">Mostrar mais ${Math.min(page, rest)}<span>${rest} restante${rest > 1 ? 's' : ''}</span></button>`;
+};
 
 export const userById = (id) => S.users.find((u) => u.id === id);
 export const listById = (id) => S.lists.find((l) => l.id === id);
@@ -524,10 +533,10 @@ function emptyState() {
   return '';
 }
 
-function rowHtml(t, { showList = false } = {}) {
+function rowHtml(t, { showList = false, byId } = {}) {
   const st = statusOf(t), done = st.type === 'done';
   const l = listById(t.list_id);
-  const parent = t.parent_id ? S.tasks.find((x) => x.id === t.parent_id) : null;
+  const parent = t.parent_id ? (byId ? byId.get(t.parent_id) : S.tasks.find((x) => x.id === t.parent_id)) : null;
   const drag = S.filters.sort === 'manual' && S.filters.group === 'status' ? 'draggable="true"' : '';
   const sel = S.selected.has(t.id);
   return `<div class="row ${done ? 'done' : ''} ${sel ? 'selected' : ''}" data-task="${t.id}" data-drag="${t.id}" ${drag}>
@@ -548,8 +557,7 @@ function rowHtml(t, { showList = false } = {}) {
       <span class="row-tags">${t.tags.map((id) => tagHtml(tagById(id))).join('')}</span>
     </div>
     <div><button class="cell-btn" data-act="assignees" data-id="${t.id}" data-stop aria-label="Responsáveis">${avatars(t.assignees)}</button></div>
-    <div><label class="cell-btn" data-stop>${t.due_date ? dateHtml(t) : `<span class="date faint">${icon('calendar', 'sm')}—</span>`}
-      <input type="date" class="sr-only" data-date-field="due_date" data-id="${t.id}" value="${esc(t.due_date || '')}" aria-label="Prazo"></label></div>
+    <div><button class="cell-btn" data-due-pick="${t.id}" data-stop aria-label="Prazo">${t.due_date ? dateHtml(t) : `<span class="date faint">${icon('calendar', 'sm')}—</span>`}</button></div>
     <div><button class="cell-btn" data-act="priority" data-id="${t.id}" data-stop>${prioHtml(t.priority)}</button></div>
     <div style="min-width:0">${statusPill(st, 'button', `data-act="status" data-id="${t.id}" data-stop`)}</div>
     <div><button class="icon-btn" data-act="task-menu" data-id="${t.id}" data-stop aria-label="Mais opções">${icon('more', 'sm')}</button></div>
@@ -598,6 +606,7 @@ function listView() {
   const empty = emptyState();
   if (empty && !tasks.length) return empty;
   const multi = r.name !== 'lista';
+  const byId = new Map(S.tasks.map((t) => [t.id, t]));
   return `<div class="page ${S.selected.size ? 'selecting' : ''}">${listGroups(tasks).map((grp) => {
     const rows = tasks.filter(grp.match);
     if (!rows.length && (!canAdd || grp.hideEmpty)) return '';
@@ -611,7 +620,8 @@ function listView() {
       </div>
       <div class="rows">
         ${rows.length ? `<div class="row-head"><span>Nome</span><span>Responsável</span><span>Prazo</span><span>Prioridade</span><span>Status</span><span></span></div>` : ''}
-        ${rows.map((t) => rowHtml(t, { showList: multi })).join('')}
+        ${rows.slice(0, shownRows.get(key) || PAGE_ROWS).map((t) => rowHtml(t, { showList: multi, byId })).join('')}
+        ${moreButton(key, rows.length, PAGE_ROWS)}
         ${canAdd ? `<div class="add-row">${icon('plus', 'sm')}<input data-quick-add="${preset}" placeholder="Adicionar tarefa e pressionar Enter" aria-label="Nova tarefa"></div>` : ''}
       </div>
     </section>`;
@@ -723,9 +733,10 @@ function boardView() {
   const canAdd = r.name !== 'minhas' && defaultListForView();
   return `<div class="board">${statuses.filter((st) => S.filters.showDone || st.type !== 'done').map((st) => {
     const cards = tasks.filter((t) => t.status === st.id);
+    const key = 'quadro:' + (r.id || r.name) + ':' + st.id;
     return `<section class="column" data-drop-status="${esc(st.id)}">
       <div class="column-head">${statusPill(st)}<span class="count">${cards.length}</span></div>
-      <div class="column-body">${cards.map(cardHtml).join('')}</div>
+      <div class="column-body">${cards.slice(0, shownRows.get(key) || PAGE_CARDS).map(cardHtml).join('')}${moreButton(key, cards.length, PAGE_CARDS)}</div>
       ${canAdd ? `<div class="add-row">${icon('plus', 'sm')}<input data-quick-add="${esc(st.id)}" placeholder="Nova tarefa" aria-label="Nova tarefa em ${esc(st.name)}"></div>` : ''}
     </section>`;
   }).join('')}</div>`;
@@ -783,6 +794,7 @@ function timelineView() {
   const dated = tasks.filter((t) => t.start_date || t.due_date).sort((a, b) => ((a.start_date || a.due_date) < (b.start_date || b.due_date) ? -1 : 1));
   const undated = tasks.filter((t) => !t.start_date && !t.due_date && !isDone(t));
   const W = TL_DAY * TL_DAYS;
+  const tlKey = 'linha:' + (S.route.id || S.route.name);
   const months = [];
   for (const d of days) { const k = d.slice(0, 7); if (!months.length || months[months.length - 1].k !== k) months.push({ k, n: 0, m: +d.slice(5, 7) - 1 }); months[months.length - 1].n++; }
   const todayX = dayDiff(start, t0) * TL_DAY;
@@ -819,8 +831,9 @@ function timelineView() {
         <div class="tl-body" style="--today:${todayX}px;--w:${W}px">
           <div class="tl-grid" style="width:${W}px">${days.map((d) => { const wd = new Date(d + 'T12:00:00').getDay(); return `<span class="${wd === 0 || wd === 6 ? 'we' : ''}" style="width:${TL_DAY}px"></span>`; }).join('')}</div>
           ${todayX >= 0 && todayX < W ? `<div class="tl-today" style="left:calc(var(--name-w) + ${todayX + TL_DAY / 2}px)"></div>` : ''}
-          ${dated.map(row).join('')}
-          ${undated.length ? `<div class="tl-section"><span class="eyebrow">Sem datas · clique na linha do dia para agendar</span></div>${undated.map(row).join('')}` : ''}
+          ${dated.slice(0, shownRows.get(tlKey) || PAGE_ROWS).map(row).join('')}
+          ${moreButton(tlKey, dated.length, PAGE_ROWS)}
+          ${undated.length ? `<div class="tl-section"><span class="eyebrow">Sem datas · clique na linha do dia para agendar</span></div>${undated.slice(0, shownRows.get(tlKey + ':sem') || PAGE_ROWS).map(row).join('')}${moreButton(tlKey + ':sem', undated.length, PAGE_ROWS)}` : ''}
           ${!dated.length && !undated.length ? '<div class="empty">Nenhuma tarefa para mostrar</div>' : ''}
         </div>
       </div>
@@ -1315,6 +1328,11 @@ const ACTIONS = {
     store.set('collapsedSpaces', [...collapsedSpaces]);
     el.closest('.folder, .space').classList.toggle('collapsed');
   },
+  'show-more': (el) => {
+    const k = el.dataset.key, page = Number(el.dataset.page);
+    shownRows.set(k, (shownRows.get(k) || page) + page);
+    renderContent();
+  },
   'toggle-group': (el) => {
     const k = el.dataset.key;
     collapsedGroups.has(k) ? collapsedGroups.delete(k) : collapsedGroups.add(k);
@@ -1476,7 +1494,12 @@ function bindGlobal() {
     if (d) patchTask(d.dataset.id, { [d.dataset.dateField]: d.value || null }).catch(() => {});
   });
   document.addEventListener('input', (e) => {
-    if (e.target.matches('[data-filter-q]')) { S.filters.q = e.target.value; renderContent(); }
+    if (e.target.matches('[data-filter-q]')) {
+      // Espera a pessoa parar de digitar: refazer a lista a cada tecla trava em listas grandes
+      S.filters.q = e.target.value;
+      clearTimeout(filterTimer);
+      filterTimer = setTimeout(renderContent, 140);
+    }
   });
   document.addEventListener('keydown', async (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
@@ -1495,11 +1518,22 @@ function bindGlobal() {
     }
     if (qa && e.key === 'Escape') { qa.value = ''; qa.blur(); }
   });
-  // Atalhos de teclado para o seletor de data: clicar no rótulo abre o calendário nativo
+  // Prazo na linha: um único campo de data é criado na hora do clique, em vez de um por linha
+  // (campos de data nativos pesam muito no navegador quando são centenas)
   document.addEventListener('click', (e) => {
-    const lbl = e.target.closest('.content label.cell-btn');
-    const inp = lbl?.querySelector('input[type=date]');
-    if (inp) { e.preventDefault(); try { inp.showPicker(); } catch { inp.focus(); } }
+    const btn = e.target.closest('.content [data-due-pick]');
+    if (!btn) return;
+    e.preventDefault();
+    const t = S.tasks.find((x) => x.id === btn.dataset.duePick);
+    document.querySelector('.content .due-picker')?.remove();
+    const inp = document.createElement('input');
+    Object.assign(inp, { type: 'date', className: 'sr-only due-picker', value: t?.due_date || '' });
+    inp.dataset.dateField = 'due_date'; inp.dataset.id = btn.dataset.duePick;
+    inp.setAttribute('aria-label', 'Prazo');
+    btn.parentElement.style.position = 'relative';
+    btn.after(inp);
+    inp.addEventListener('blur', () => setTimeout(() => inp.remove(), 0), { once: true });
+    try { inp.showPicker(); } catch { inp.focus(); }
   });
   bindDnd();
   bindDrawer();
@@ -1634,7 +1668,7 @@ function bindDrawer() {
 }
 
 // ---------- tempo real ----------
-let es, refreshTimer, structureTimer;
+let es, refreshTimer, structureTimer, filterTimer;
 function connectEvents() {
   es?.close();
   es = new EventSource('/api/events');
