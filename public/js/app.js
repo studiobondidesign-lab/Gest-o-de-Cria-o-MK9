@@ -744,6 +744,64 @@ function boardView() {
   }).join('')}</div>`;
 }
 
+// ---------- Google Agenda no calendário ----------
+export const gCache = new Map();
+function gEventsFor(from, to) {
+  if (!S.google?.connected) return [];
+  const key = from + '_' + to;
+  const c = gCache.get(key);
+  if (c && (c.loading || Date.now() - c.at < 120000)) return c.events;
+  const entry = { events: c?.events || [], at: Date.now(), loading: true };
+  gCache.set(key, entry);
+  api('GET', `/api/google/events?from=${from}&to=${to}`).then((r) => {
+    Object.assign(entry, { events: r.events || [], loading: false, at: Date.now() });
+    if (!r.connected && S.google) S.google = { ...S.google, connected: false };
+    if (S.route.view === 'calendario' && document.querySelector('.cal')) renderContent();
+  }).catch(() => { entry.loading = false; });
+  return entry.events;
+}
+function gByDay(events) {
+  const out = {};
+  for (const e of events) {
+    let k = e.start_date; const end = e.end_date >= e.start_date ? e.end_date : e.start_date;
+    for (let i = 0; i < 31 && k <= end; i++, k = addDays(k, 1)) (out[k] ||= []).push(e);
+  }
+  return out;
+}
+const gTime = (e) => e.all_day ? '' : new Date(e.start).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+function gWhen(e) {
+  if (e.all_day) return e.start_date === e.end_date ? `${fmtDate(e.start_date)}, dia inteiro` : `${fmtDate(e.start_date)} a ${fmtDate(e.end_date)}`;
+  const end = new Date(e.end).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return `${fmtDate(e.start_date)}, ${gTime(e)} às ${end}`;
+}
+const gChip = (e, cls = 'cal-gev') => `<button type="button" class="${cls}" data-act="gev" data-gev="${esc(e.id)}" title="${esc(e.title)} · Google Agenda">${gTime(e) ? `<span class="tm">${gTime(e)}</span>` : ''}<span class="ellipsis">${esc(e.title)}</span></button>`;
+function gFind(id) { for (const c of gCache.values()) { const e = c.events.find((x) => x.id === id); if (e) return e; } return null; }
+function showGEvent(el, e) {
+  openPopover(el, (p) => {
+    p.innerHTML = `<div class="gev-pop">
+      <div class="gev-src caption faint">${icon('calendar', 'sm')}Google Agenda</div>
+      <div class="h-card">${esc(e.title)}</div>
+      <div class="caption muted">${esc(gWhen(e))}</div>
+      ${e.location ? `<div class="caption muted ellipsis">${esc(e.location)}</div>` : ''}
+      ${e.description ? `<p class="caption gev-desc">${esc(e.description.replace(/<[^>]+>/g, ' ').slice(0, 280))}</p>` : ''}
+      <div class="gev-actions"><button class="btn btn-primary btn-sm" type="button" data-gev-task>Criar tarefa</button>
+        ${e.meet ? `<a class="btn btn-ghost btn-sm" href="${esc(e.meet)}" target="_blank" rel="noopener">Entrar no Meet</a>` : ''}
+        ${e.link ? `<a class="btn btn-ghost btn-sm" href="${esc(e.link)}" target="_blank" rel="noopener">Abrir no Google</a>` : ''}</div>
+    </div>`;
+    p.querySelector('[data-gev-task]').addEventListener('click', async () => {
+      const list = S.route.name !== 'minhas' ? defaultListForView() : null;
+      closePopover();
+      if (!list) { newTaskDialog({ due_date: e.end_date, mine: true, title: e.title }); return; }
+      const desc = [`Do Google Agenda: ${gWhen(e)}`, e.location, e.link].filter(Boolean).join('\n');
+      try {
+        const t = await createTask({ title: e.title, list_id: list.id, due_date: e.end_date, start_date: e.start_date < e.end_date ? e.start_date : null, assignees: [S.me.id], description: desc });
+        renderContent();
+        toast('Tarefa criada', { action: 'Abrir', onAction: () => go(taskHash(t.id)) });
+      } catch (ex) { fail(ex); }
+    });
+  }, { width: 300 });
+}
+
 // No celular, a grade do mês vira um mês compacto com pontos + a agenda do dia escolhido (como o Calendário do iPhone)
 export const phone = matchMedia('(max-width: 640px)');
 function calendarView() {
@@ -757,6 +815,7 @@ function calendarView() {
   if (days[35].getMonth() !== m.getMonth()) days.length = 35;
   const byDay = {};
   for (const t of tasks) if (t.due_date) (byDay[t.due_date] ||= []).push(t);
+  const gDay = gByDay(gEventsFor(ymd(days[0]), ymd(days[days.length - 1])));
   const noDate = tasks.filter((t) => !t.due_date && !isDone(t)).length;
   const t0 = today();
   const canAdd = S.route.name !== 'minhas' ? defaultListForView() : S.lists[0];
@@ -772,11 +831,13 @@ function calendarView() {
     <div class="cal-grid">
       ${['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map((d) => `<div class="cal-dow">${d}</div>`).join('')}
       ${days.map((d) => {
-        const k = ymd(d), list = byDay[k] || [];
+        const k = ymd(d), list = byDay[k] || [], gl = gDay[k] || [];
+        const nT = Math.min(list.length, 4), nG = Math.min(gl.length, Math.max(0, 4 - nT)), extra = list.length - nT + gl.length - nG;
         return `<div class="cal-day ${d.getMonth() !== m.getMonth() ? 'other' : ''} ${k === t0 ? 'today' : ''}" data-drop-date="${k}">
           <div class="day-head"><span class="n">${d.getDate()}</span>${canAdd ? `<button class="icon-btn" data-act="cal-add" data-date="${k}" aria-label="Adicionar tarefa em ${k}">${icon('plus', 'sm')}</button>` : ''}</div>
-          ${list.slice(0, 4).map((t) => `<div class="cal-task ${isDone(t) ? 'done' : ''}" data-task="${t.id}" data-drag="${t.id}" draggable="true" style="--c:${esc(statusOf(t).color)}"><span class="dot"></span><span class="ellipsis">${esc(t.title)}</span></div>`).join('')}
-          ${list.length > 4 ? `<button class="cal-more" data-act="cal-more" data-date="${k}">+${list.length - 4} mais</button>` : ''}
+          ${list.slice(0, nT).map((t) => `<div class="cal-task ${isDone(t) ? 'done' : ''}" data-task="${t.id}" data-drag="${t.id}" draggable="true" style="--c:${esc(statusOf(t).color)}"><span class="dot"></span><span class="ellipsis">${esc(t.title)}</span></div>`).join('')}
+          ${gl.slice(0, nG).map((e) => gChip(e)).join('')}
+          ${extra > 0 ? `<button class="cal-more" data-act="cal-more" data-date="${k}">+${extra} mais</button>` : ''}
         </div>`;
       }).join('')}
     </div>
@@ -793,6 +854,7 @@ function calendarAgenda() {
   if (days[35].getMonth() !== m.getMonth()) days.length = 35;
   const byDay = {};
   for (const t of tasks) if (t.due_date) (byDay[t.due_date] ||= []).push(t);
+  const gDay = gByDay(gEventsFor(ymd(days[0]), ymd(days[days.length - 1])));
   const inMonth = (k) => k.slice(0, 7) === ymd(first).slice(0, 7);
   const sel = S.calSel && inMonth(S.calSel) ? S.calSel : inMonth(t0) ? t0 : ymd(first);
   const list = byDay[sel] || [];
@@ -812,14 +874,16 @@ function calendarAgenda() {
       ${days.map((d) => {
         const k = ymd(d), n = byDay[k] || [];
         return `<button class="mini-day ${inMonth(k) ? '' : 'other'} ${k === t0 ? 'today' : ''} ${k === sel ? 'picked' : ''}" data-act="cal-pick" data-date="${k}" aria-label="${fmtDate(k)}${n.length ? `, ${n.length} tarefa${n.length > 1 ? 's' : ''}` : ''}" aria-pressed="${k === sel}">
-          <span class="n">${d.getDate()}</span><span class="dots">${n.slice(0, 3).map((t) => `<i style="--c:${esc(statusOf(t).color)}"></i>`).join('')}</span></button>`;
+          <span class="n">${d.getDate()}</span><span class="dots">${n.slice(0, 3).map((t) => `<i style="--c:${esc(statusOf(t).color)}"></i>`).join('')}${gDay[k] && n.length < 3 ? '<i class="g"></i>' : ''}</span></button>`;
       }).join('')}
     </div>
     <section class="agenda">
       <div class="agenda-head"><h3 class="h-card">${label}</h3><span class="count">${list.length || ''}</span></div>
       ${list.map((t) => { const st = statusOf(t); return `<div class="agenda-item ${isDone(t) ? 'done' : ''}" data-task="${t.id}">
         <input type="checkbox" class="check" data-act="toggle-done-task" data-id="${t.id}" ${isDone(t) ? 'checked' : ''} aria-label="Concluir" data-stop>
-        <span class="t">${esc(t.title)}</span>${statusPill(st)}${avatars(t.assignees, 2)}</div>`; }).join('') || '<p class="agenda-empty">Nada com prazo neste dia.</p>'}
+        <span class="t">${esc(t.title)}</span>${statusPill(st)}${avatars(t.assignees, 2)}</div>`; }).join('')}
+      ${(gDay[sel] || []).map((e) => gChip(e, 'agenda-gev')).join('')}
+      ${list.length || gDay[sel]?.length ? '' : '<p class="agenda-empty">Nada com prazo neste dia.</p>'}
       ${canAdd ? `<button class="show-more" data-act="cal-add" data-date="${sel}">${icon('plus', 'sm')}Nova tarefa neste dia</button>` : ''}
     </section>
   </div>`;
@@ -1073,8 +1137,76 @@ function profileView() {
       <div class="field"><label for="p-new">Nova senha</label><input class="input" id="p-new" name="newPassword" type="password" autocomplete="new-password" minlength="8"></div>
       <div><button class="btn btn-ghost" type="submit">Atualizar senha</button></div>
     </form>
+    ${S.config.google ? `<section class="panel g-panel" data-g-panel>${googlePanel()}</section>` : ''}
+    <section class="panel cal-panel" style="display:flex;flex-direction:column;gap:16px">
+      ${S.config.google
+        ? `<div><h2 class="h-card">Link de agenda (só leitura)</h2><p class="caption muted" style="margin-top:4px">Para outros apps de agenda, como Apple ou Outlook. Mostra seus prazos, mas não deixa editar.</p></div>`
+        : `<div><h2 class="h-card">Google Agenda</h2><p class="caption muted" style="margin-top:4px">Os prazos das tarefas atribuídas a você aparecem na sua agenda e se atualizam sozinhos.</p></div>`}
+      <div class="cal-link"><input class="input" id="cal-url" readonly value="Gerando link…" aria-label="Link da sua agenda"><button class="btn ${S.config.google ? 'btn-ghost' : 'btn-primary'}" type="button" data-cal="copy">Copiar link</button></div>
+      ${S.config.google ? '' : `<ol class="cal-steps caption">
+        <li>Abra o <a href="https://calendar.google.com/calendar/r/settings/addbyurl" target="_blank" rel="noopener">Google Agenda › Adicionar pelo URL</a>.</li>
+        <li>Cole o link acima e clique em <b>Adicionar agenda</b>.</li>
+        <li>Pronto. O Google confere mudanças algumas vezes por dia, então uma alteração pode levar algumas horas para aparecer.</li>
+      </ol>`}
+      <p class="caption faint">O link é pessoal: quem tiver ele vê seus prazos. Se vazar, gere outro e o antigo para de funcionar. <button class="link-btn" type="button" data-cal="rotate">Gerar novo link</button></p>
+    </section>
   </div>`;
 }
+function googlePanel() {
+  const g = S.google;
+  if (!g) return '<p class="caption faint">Carregando…</p>';
+  const head = `<div class="g-head"><span class="g-logo" aria-hidden="true">${icon('calendar')}</span><div><h2 class="h-card">Google Agenda</h2>`;
+  if (!g.connected) return `${head}<p class="caption muted">Conecte sua conta para ver sua agenda aqui e levar seus prazos para lá.</p></div></div>
+    <ul class="g-points caption">
+      <li>Tarefas com prazo atribuídas a você viram eventos de dia inteiro na sua agenda.</li>
+      <li>Seus compromissos aparecem no calendário da plataforma, e dá para criar uma tarefa a partir deles.</li>
+      <li>Mudou a data ou o nome do evento no Google, a tarefa muda junto.</li>
+    </ul>
+    <div><a class="btn btn-primary" href="/api/google/connect" data-g="connect">Conectar Google Agenda</a></div>`;
+  const when = g.last_sync ? new Date(g.last_sync).toLocaleString('pt-BR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : null;
+  return `${head}<p class="caption muted">Conectado como <b>${esc(g.email || 'sua conta Google')}</b></p></div></div>
+    <label class="g-toggle"><input type="checkbox" class="check" data-g="sync" ${g.sync_tasks ? 'checked' : ''}><span><b>Enviar meus prazos para a agenda</b><span class="caption faint">${g.sync_tasks ? `${g.events} tarefa${g.events !== 1 ? 's' : ''} na agenda agora` : 'Desligado: nenhuma tarefa vai para a agenda'}</span></span></label>
+    ${g.last_error ? `<p class="caption g-error">A última sincronização falhou. Tente de novo em instantes.</p>` : ''}
+    <div class="g-actions"><button class="btn btn-ghost btn-sm" type="button" data-g="sync-now">Sincronizar agora</button><span class="caption faint">${when ? `Última sincronização: ${when}` : 'Sincronizando…'}</span><span style="flex:1"></span><button class="link-btn caption" type="button" data-g="disconnect">Desconectar</button></div>`;
+}
+export async function loadGoogle() {
+  if (!S.config.google) { S.google = null; return null; }
+  try { S.google = await api('GET', '/api/google'); } catch { S.google = null; }
+  return S.google;
+}
+function bindGoogle(c) {
+  const panel = c.querySelector('[data-g-panel]');
+  if (!panel) return;
+  const paint = () => { panel.innerHTML = googlePanel(); };
+  panel.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-g]');
+    if (!b) return;
+    const act = b.dataset.g;
+    if (act === 'sync-now') {
+      b.disabled = true; b.textContent = 'Sincronizando…';
+      try { S.google = await api('POST', '/api/google/sync'); gCache.clear(); toast('Agenda sincronizada'); } catch (ex) { fail(ex); }
+      paint();
+    } else if (act === 'disconnect') {
+      if (!(await confirmDialog('Desconectar Google Agenda?', 'As tarefas que a plataforma colocou na sua agenda serão removidas de lá. Seus outros eventos não mudam.', { ok: 'Desconectar', danger: true }))) return;
+      try { S.google = await api('DELETE', '/api/google'); gCache.clear(); toast('Google Agenda desconectado'); } catch (ex) { fail(ex); }
+      paint();
+    }
+  });
+  panel.addEventListener('change', async (e) => {
+    if (e.target.dataset.g !== 'sync') return;
+    e.target.disabled = true;
+    try { S.google = await api('PATCH', '/api/google', { sync_tasks: e.target.checked }); toast(e.target.checked ? 'Prazos indo para a sua agenda' : 'Prazos removidos da sua agenda'); } catch (ex) { fail(ex); }
+    paint();
+  });
+  const msg = { conectado: ['Google Agenda conectado'], cancelado: ['Conexão cancelada', true], permissao: ['Marque a permissão de agenda para conectar', true], expirou: ['A conexão demorou demais. Tente de novo', true], erro: ['Não foi possível conectar ao Google', true] };
+  const q = new URLSearchParams(location.hash.split('?')[1] || '').get('google');
+  if (q) {
+    history.replaceState(null, '', '#/perfil');
+    if (msg[q]) toast(msg[q][0], { error: !!msg[q][1] });
+  }
+  loadGoogle().then(paint);
+}
+
 function bindProfile(c) {
   let color = S.me.color;
   c.querySelectorAll('[data-color]').forEach((b) => b.addEventListener('click', () => {
@@ -1094,6 +1226,18 @@ function bindProfile(c) {
       await api('PATCH', '/api/me', { currentPassword: e.target.currentPassword.value, newPassword: e.target.newPassword.value });
       e.target.reset(); toast('Senha atualizada');
     } catch (ex) { fail(ex); }
+  });
+  bindGoogle(c);
+  const calInput = c.querySelector('#cal-url');
+  api('GET', '/api/me/calendar').then(({ url }) => { calInput.value = url; }).catch(() => { calInput.value = 'Não foi possível gerar o link'; });
+  calInput.addEventListener('focus', () => calInput.select());
+  c.querySelector('[data-cal=copy]').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(calInput.value); toast('Link copiado. Agora cole no Google Agenda'); }
+    catch { calInput.select(); toast('Selecione e copie o link'); }
+  });
+  c.querySelector('[data-cal=rotate]').addEventListener('click', async () => {
+    if (!(await confirmDialog('Gerar novo link?', 'O link atual para de funcionar. Você vai precisar adicionar o novo no Google Agenda e remover o antigo.', { ok: 'Gerar novo link' }))) return;
+    try { const { url } = await api('POST', '/api/me/calendar'); calInput.value = url; toast('Novo link gerado'); } catch (ex) { fail(ex); }
   });
 }
 
@@ -1205,7 +1349,7 @@ export function newTaskDialog(preset = {}) {
   }).join('');
   dialog(`<h2 class="h-section">Nova tarefa</h2>
     <form style="display:flex;flex-direction:column;gap:16px">
-      <div class="field"><label for="t-title">Título</label><input class="input" id="t-title" name="title" required placeholder="Ex.: Key visual da campanha"></div>
+      <div class="field"><label for="t-title">Título</label><input class="input" id="t-title" name="title" required placeholder="Ex.: Key visual da campanha" value="${esc(preset.title || '')}"></div>
       <div class="field"><label for="t-list">Lista</label><select class="select input" id="t-list" name="list_id">${opts}</select></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div class="field"><label for="t-due">Prazo</label><input class="input" id="t-due" name="due_date" type="date" style="color-scheme:dark" value="${esc(preset.due_date || '')}"></div>
@@ -1513,8 +1657,14 @@ const ACTIONS = {
   'cal-more': (el) => {
     const date = el.dataset.date;
     const list = filtered(S.tasks).filter((t) => t.due_date === date);
-    menuPopover(el, { items: () => list.map((t) => ({ id: t.id, html: `${statusPill(statusOf(t))}<span class="ellipsis">${esc(t.title)}</span>` })), onPick: (id) => go(taskHash(id)) });
+    const gl = [...gCache.values()].flatMap((c) => c.events).filter((e, i, a) => e.start_date <= date && date <= e.end_date && a.findIndex((x) => x.id === e.id) === i);
+    menuPopover(el, {
+      items: () => [...list.map((t) => ({ id: t.id, html: `${statusPill(statusOf(t))}<span class="ellipsis">${esc(t.title)}</span>` })),
+        ...gl.map((e) => ({ id: 'g:' + e.id, html: `<span class="gev-dot"></span>${gTime(e) ? `<span class="caption faint">${gTime(e)}</span>` : ''}<span class="ellipsis">${esc(e.title)}</span>` }))],
+      onPick: (id) => { if (id.startsWith('g:')) { const e = gFind(id.slice(2)); if (e) setTimeout(() => showGEvent(el, e)); } else go(taskHash(id)); },
+    });
   },
+  gev: (el) => { const e = gFind(el.dataset.gev); if (e) showGEvent(el, e); },
   'inbox-filter': (el) => { store.set('inboxUnread', el.dataset.v === '1'); renderContent(); },
   'read-all': async () => { await api('POST', '/api/notifications/read', {}); S.unread = 0; renderSidebar(); renderContent(); },
 };
@@ -1735,6 +1885,10 @@ function connectEvents() {
       clearTimeout(structureTimer);
       structureTimer = setTimeout(async () => { try { await loadBootstrap(); renderSidebar(); renderTop(); if (S.route.name === 'membros') renderContent(); } catch { /* offline */ } }, 300);
     }
+    if (ev.type === 'google' && ev.users.includes(S.me?.id)) {
+      gCache.clear();
+      loadGoogle().then(() => { if (S.route.name === 'perfil' || S.route.view === 'calendario') renderContent(); });
+    }
     if (ev.type === 'notification' && ev.users.includes(S.me?.id)) {
       api('GET', '/api/bootstrap').then((b) => { S.unread = b.unread; renderSidebar(); if (S.route.name === 'entrada') renderContent(); }).catch(() => {});
     }
@@ -1753,6 +1907,7 @@ async function boot() {
   document.getElementById('root').innerHTML = '';
   if (!bootedOnce) { bindGlobal(); bootedOnce = true; }
   connectEvents();
+  loadGoogle().then((g) => { if (g?.connected && S.route.view === 'calendario') renderContent(); });
   await onRoute();
 }
 let bootedOnce = false;

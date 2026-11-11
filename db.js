@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS task_dependencies (
   task_id TEXT NOT NULL, depends_on TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (task_id, depends_on)
 );
 CREATE INDEX IF NOT EXISTS idx_deps_on ON task_dependencies(depends_on);
+CREATE TABLE IF NOT EXISTS google_accounts (
+  user_id TEXT PRIMARY KEY, email TEXT, access_token TEXT, refresh_token TEXT NOT NULL, expires_at INTEGER NOT NULL DEFAULT 0,
+  sync_tasks INTEGER NOT NULL DEFAULT 1, last_sync TEXT, last_error TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS google_events (
+  task_id TEXT NOT NULL, user_id TEXT NOT NULL, event_id TEXT NOT NULL, pushed_start TEXT, pushed_due TEXT, pushed_title TEXT, pushed_hash TEXT,
+  PRIMARY KEY (task_id, user_id));
+CREATE INDEX IF NOT EXISTS idx_gevents_user ON google_events(user_id);
 `;
 
 // Colunas adicionadas depois da primeira versão (bancos já existentes recebem via ALTER TABLE)
@@ -77,6 +84,7 @@ const COLUMNS = [
   ['comments', 'pin_x', 'REAL'],
   ['comments', 'pin_y', 'REAL'],
   ['comments', 'resolved', 'INTEGER NOT NULL DEFAULT 0'],
+  ['users', 'calendar_token', 'TEXT'],
 ];
 
 export function openDb(file) {

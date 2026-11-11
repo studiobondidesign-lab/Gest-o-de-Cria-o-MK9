@@ -88,6 +88,10 @@ async function syncTimer() {
 }
 
 function activityText(a) {
+  const t = activityBase(a);
+  return a.data?.via === 'google' ? `${t} pelo Google Agenda` : t;
+}
+function activityBase(a) {
   const d = a.data || {};
   const names = (ids = []) => ids.map((i) => userById(i)?.name || 'alguém').join(', ');
   switch (a.type) {

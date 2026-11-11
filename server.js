@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
+import { setupGoogle } from './google.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -86,7 +87,9 @@ const clients = new Set();
 function broadcast(event) {
   const payload = `data: ${JSON.stringify(event)}\n\n`;
   for (const res of clients) res.write(payload);
+  google?.onEvent(event);
 }
+let google = null;
 setInterval(() => { for (const res of clients) res.write(': ping\n\n'); }, 25000).unref();
 
 // ---------- autenticação ----------
@@ -240,7 +243,7 @@ const route = (method, pattern, handler, opts = {}) => {
 };
 
 // Auth
-route('GET', '/api/config', () => ({ registrationCode: !!REGISTRATION_CODE, emailDomain: ALLOWED_EMAIL_DOMAIN || null }), { auth: false });
+route('GET', '/api/config', () => ({ registrationCode: !!REGISTRATION_CODE, emailDomain: ALLOWED_EMAIL_DOMAIN || null, google: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) }), { auth: false });
 
 route('POST', '/api/auth/register', async ({ req, res }) => {
   const b = await readJson(req);
@@ -280,6 +283,74 @@ route('POST', '/api/auth/logout', ({ req, res }) => {
 }, { auth: false });
 
 route('GET', '/api/me', ({ user }) => ({ user: publicUser(user) }));
+
+// ---------- Google Agenda (link iCal) ----------
+// Cada pessoa tem um link secreto que o Google Agenda assina em "Adicionar agenda > Do URL".
+// Mostra as tarefas atribuídas a ela que têm prazo; só leitura, o Google atualiza sozinho de tempos em tempos.
+function publicUrl(req) {
+  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
+  const proto = TRUST_PROXY ? String(req.headers['x-forwarded-proto'] || 'https').split(',')[0] : (COOKIE_SECURE ? 'https' : 'http');
+  return `${proto}://${req.headers.host}`;
+}
+function calendarUrl(req, token) {
+  return `${publicUrl(req)}/api/calendar/${token}.ics`;
+}
+function ensureCalendarToken(user, rotate = false) {
+  if (user.calendar_token && !rotate) return user.calendar_token;
+  const token = crypto.randomBytes(24).toString('base64url');
+  db.prepare('UPDATE users SET calendar_token = ? WHERE id = ?').run(token, user.id);
+  return token;
+}
+route('GET', '/api/me/calendar', ({ req, user }) => ({ url: calendarUrl(req, ensureCalendarToken(user)) }));
+route('POST', '/api/me/calendar', ({ req, user }) => ({ url: calendarUrl(req, ensureCalendarToken(user, true)) }));
+
+const icsText = (v) => String(v).replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/[,;]/g, (m) => '\\' + m);
+// Linhas do iCal têm no máximo 75 bytes; o resto continua na linha seguinte começando com espaço
+function icsFold(line) {
+  const out = []; let cur = '', bytes = 0;
+  for (const ch of line) {
+    const n = Buffer.byteLength(ch);
+    if (bytes + n > (out.length ? 74 : 75)) { out.push(cur); cur = ''; bytes = 0; }
+    cur += ch; bytes += n;
+  }
+  out.push(cur);
+  return out.join('\r\n ');
+}
+const icsDate = (d) => d.replace(/-/g, '');
+const icsNextDay = (d) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + 1); return x.toISOString().slice(0, 10).replace(/-/g, ''); };
+route('GET', '/api/calendar/:file', ({ req, res, params }) => {
+  const token = params.file.replace(/\.ics$/, '');
+  const user = token && db.prepare('SELECT * FROM users WHERE calendar_token = ? AND active = 1').get(token);
+  if (!user) notFound('Agenda não encontrada');
+  const rows = db.prepare(`SELECT t.*, l.name list_name, l.statuses, s.name space_name FROM tasks t
+    JOIN lists l ON l.id = t.list_id JOIN spaces s ON s.id = l.space_id
+    JOIN task_assignees a ON a.task_id = t.id AND a.user_id = ?
+    WHERE t.archived = 0 AND l.archived = 0 AND s.archived = 0 AND t.due_date IS NOT NULL
+      AND (t.completed_at IS NULL OR t.due_date >= ?)
+    ORDER BY t.due_date LIMIT 2000`).all(user.id, new Date(Date.now() - 60 * 864e5).toISOString().slice(0, 10));
+  const base = calendarUrl(req, '').replace(/\/api\/calendar\/\.ics$/, '');
+  const stamp = now().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//MK9//Tarefas//PT-BR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+    `X-WR-CALNAME:${icsText('MK9 Tarefas · ' + user.name.split(' ')[0])}`, 'X-WR-TIMEZONE:America/Sao_Paulo', 'REFRESH-INTERVAL;VALUE=DURATION:PT1H', 'X-PUBLISHED-TTL:PT1H'];
+  for (const t of rows) {
+    const status = (JSON.parse(t.statuses).find((x) => x.id === t.status) || {}).name || t.status;
+    const start = t.start_date && t.start_date <= t.due_date ? t.start_date : t.due_date;
+    const link = `${base}/#/lista/${t.list_id}/lista?tarefa=${t.id}`;
+    lines.push('BEGIN:VEVENT', `UID:${t.id}@mk9-tarefas`, `DTSTAMP:${stamp}`,
+      `DTSTART;VALUE=DATE:${icsDate(start)}`, `DTEND;VALUE=DATE:${icsNextDay(t.due_date)}`,
+      `SUMMARY:${icsText((t.completed_at ? '✓ ' : '') + t.title)}`,
+      `DESCRIPTION:${icsText(`${t.space_name} › ${t.list_name}\nStatus: ${status}${t.description ? '\n\n' + t.description.slice(0, 1500) : ''}\n\n${link}`)}`,
+      `URL:${link}`, `STATUS:${t.completed_at ? 'CANCELLED' : 'CONFIRMED'}`, 'TRANSP:TRANSPARENT', 'END:VEVENT');
+  }
+  lines.push('END:VCALENDAR');
+  const body = lines.map(icsFold).join('\r\n') + '\r\n';
+  res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8', 'Content-Disposition': 'inline; filename="mk9-tarefas.ics"', 'Cache-Control': 'no-store' });
+  res.end(body);
+  return undefined;
+}, { auth: false });
+
+// ---------- Google Agenda (conta conectada) ----------
+google = setupGoogle({ db, route, broadcast, logActivity, now, HttpError, readJson, publicUrl });
 
 route('PATCH', '/api/me', async ({ req, user }) => {
   const b = await readJson(req);
@@ -497,12 +568,13 @@ route('POST', '/api/tasks', async ({ req, user }) => {
   const status = statuses.find((s) => s.id === b.status)?.id || statuses[0].id;
   const done = statuses.find((s) => s.id === status).type === 'done';
   if (b.priority !== undefined && !PRIORITIES.includes(b.priority)) bad('Prioridade inválida');
-  if (b.due_date !== undefined && !isDate(b.due_date)) bad('Data inválida');
+  if ((b.due_date !== undefined && !isDate(b.due_date)) || (b.start_date !== undefined && !isDate(b.start_date))) bad('Data inválida');
+  const description = typeof b.description === 'string' ? b.description.slice(0, 20000) : '';
   const id = uid();
   tx(() => {
     db.prepare(`INSERT INTO tasks (id, list_id, parent_id, title, description, status, priority, start_date, due_date, position,
-      created_by, created_at, updated_at, completed_at, archived) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`)
-      .run(id, list.id, b.parent_id || null, title, status, b.priority || null, b.start_date || null, b.due_date || null,
+      created_by, created_at, updated_at, completed_at, archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+      .run(id, list.id, b.parent_id || null, title, description, status, b.priority || null, b.start_date || null, b.due_date || null,
         nextPosition('tasks', 'list_id = ?', list.id), user.id, now(), now(), done ? now() : null);
     const assignees = Array.isArray(b.assignees) ? b.assignees : [];
     for (const a of assignees) db.prepare('INSERT OR IGNORE INTO task_assignees (task_id, user_id) VALUES (?, ?)').run(id, a);
@@ -892,6 +964,7 @@ const server = http.createServer(async (req, res) => {
       const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
       const user = currentUser(req);
       if (r.auth && !user) throw new HttpError(401, 'Faça login para continuar');
+      if (user) google?.note(req);
       const out = await r.handler({ req, res, url, params, user });
       if (out !== undefined && !res.headersSent) send(res, 200, out);
       return;

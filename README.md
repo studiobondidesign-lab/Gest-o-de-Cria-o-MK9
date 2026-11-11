@@ -37,6 +37,20 @@ npm start
 | `REGISTRATION_CODE` | Se definido, só cria conta quem souber esse código | vazio |
 | `ALLOWED_EMAIL_DOMAIN` | Se definido (ex.: `mk9.com.br`), só aceita e-mails desse domínio | vazio |
 | `TRUST_PROXY` | `true` atrás de um proxy (Render, Fly): usa o IP real do visitante no limite de tentativas | `false` |
+| `PUBLIC_URL` | Endereço público do app, usado nos links dos eventos e no retorno do login Google | detectado pela requisição |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Liga o botão "Conectar Google Agenda" no perfil (veja abaixo) | vazio (desligado) |
+
+## Google Agenda
+
+Cada pessoa conecta a própria conta em **Meu perfil › Google Agenda**. Depois disso:
+
+- tarefas com prazo atribuídas a ela viram eventos de dia inteiro na agenda principal (e somem se a tarefa for arquivada, excluída ou tiver o responsável trocado);
+- os compromissos da agenda aparecem no calendário da plataforma, com **Criar tarefa** a partir de um evento;
+- mudou a data ou o nome do evento no Google, a tarefa muda junto (a cada 10 minutos ou ao abrir o calendário).
+
+Para ligar, crie um ID do cliente OAuth no Google Cloud (tipo **Aplicativo da Web**), com o URI de redirecionamento `https://SEU-ENDERECO/api/google/callback`, ative a **Google Calendar API** e preencha `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET`. Escopo usado: `calendar.events` (só eventos, não lê configurações nem outras agendas).
+
+Sem essas variáveis, o perfil mostra só o link de agenda (iCal), que funciona em qualquer app de agenda mas é somente leitura.
 
 ## Publicar
 

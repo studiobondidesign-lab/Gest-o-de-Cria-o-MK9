@@ -732,5 +732,41 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 /* Telas médias (tablet deitado, notebook pequeno): o nome da tarefa tem prioridade sobre as etiquetas */
 .row .title-cell .t { min-width: min(12ch, 100%); }
 .row .meta-icons { flex-shrink: 0; }
-.row .title-cell { overflow: hidden; }
+/* o seletor fica 24px à esquerda do nome: o recorte abre espaço para ele não ser cortado */
+.row .title-cell { overflow: hidden; padding-left: 28px; margin-left: -28px; }
 @media (max-width: 1280px) { .row .row-tags, .row .meta-icons [title="Tempo registrado"], .row .meta-icons [title="Anexos"] { display: none; } }
+
+/* ── Google Agenda (perfil) ── */
+.cal-link { display:flex; gap:8px; }
+.cal-link .input { flex:1; min-width:0; font-family: var(--font-mono, ui-monospace, monospace); font-size:12px; color: var(--text-muted, inherit); }
+.cal-steps { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; }
+.cal-steps a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.link-btn { background:none; border:0; padding:0; font:inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor:pointer; }
+@media (max-width: 640px) { .cal-link { flex-direction:column; } .cal-link .input { flex:none; } }
+
+/* ── Google Agenda conectado ── */
+.g-panel { display:flex; flex-direction:column; gap:16px; }
+.g-head { display:flex; gap:12px; align-items:flex-start; }
+.g-head .h-card { margin-bottom:2px; }
+.g-logo { flex:none; width:36px; height:36px; border-radius:10px; display:grid; place-items:center; background: color-mix(in oklab, var(--accent, #5b6cf0) 16%, transparent); color: var(--accent, #5b6cf0); }
+.g-points { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; color: var(--text-muted); }
+.g-toggle { display:flex; gap:12px; align-items:flex-start; cursor:pointer; }
+.g-toggle > span { display:flex; flex-direction:column; gap:2px; }
+.g-toggle .check { margin-top:2px; }
+.g-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.g-error { color: var(--danger, #e5787a); }
+
+.cal-gev, .agenda-gev { display:flex; align-items:center; gap:6px; width:100%; min-width:0; text-align:left; font:inherit; font-size:12px; line-height:1.3;
+  padding:3px 6px; border-radius:6px; border:1px dashed color-mix(in oklab, var(--text-muted) 45%, transparent); background:transparent; color: var(--text-muted); cursor:pointer;
+  transition: background-color .15s ease, color .15s ease; }
+.cal-gev:hover, .agenda-gev:hover { background: color-mix(in oklab, var(--text-muted) 12%, transparent); color: var(--text); }
+.cal-gev .tm, .agenda-gev .tm { font-variant-numeric: tabular-nums; opacity:.8; flex:none; }
+.cal-gev:active, .agenda-gev:active { transform: scale(.98); }
+.agenda-gev { padding:12px; font-size:14px; border-radius:10px; margin-top:6px; }
+.mini-day .dots i.g { background:transparent; border:1px solid var(--text-muted); }
+.gev-dot { width:8px; height:8px; flex:none; border-radius:50%; border:1px dashed var(--text-muted); }
+.gev-pop { display:flex; flex-direction:column; gap:6px; padding:12px; }
+.gev-src { display:flex; align-items:center; gap:6px; }
+.gev-desc { margin:4px 0 0; color: var(--text-muted); white-space:pre-line; }
+.gev-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+@media (prefers-reduced-motion: reduce) { .cal-gev, .agenda-gev { transition:none; } .cal-gev:active, .agenda-gev:active { transform:none; } }
