@@ -2,6 +2,7 @@ import {
   esc, icon, PRIORITY, MONTHS_FULL, ymd, today, addDays, fmtDate, dateClass, timeAgo, fmtSize,
   api, setUnauthorizedHandler, toast, fail, openPopover, closePopover, menuPopover, popoverOpen, dialog, confirmDialog, autosize,
 } from './ui.js';
+import { parseQuick } from './quick.js';
 import { openTask, closeTask, refreshTask, currentTaskId, taskIsBusy } from './task.js';
 
 // ---------- estado ----------
@@ -1175,6 +1176,19 @@ function profileView() {
         ${[['dark', 'moon', 'Noturno'], ['light', 'sun', 'Claro'], ['auto', 'monitor', 'Automático']].map(([v, ic, label]) => `<button type="button" data-theme-pick="${v}" aria-pressed="${themePref() === v}">${icon(ic, 'sm')}${label}</button>`).join('')}
       </div>
     </section>
+    <section class="panel wa-panel">
+      <div><h2 class="h-card">Tarefas pelo WhatsApp</h2><p class="caption muted" style="margin-top:4px">Segure uma mensagem no WhatsApp, toque em Compartilhar e mande para o MK9 Tarefas. A tarefa abre preenchida, e o prazo sai do texto: “sexta”, “amanhã”, “20/11”, “dia 5”, “urgente”.</p></div>
+      <details class="wa-how"><summary>Android</summary><ol class="caption">
+        <li>Abra este site no Chrome, toque em <b>⋮ › Instalar app</b> (ou <b>Adicionar à tela inicial</b>).</li>
+        <li>No WhatsApp, segure a mensagem, toque em <b>Compartilhar</b> e escolha <b>MK9 Tarefas</b>.</li></ol></details>
+      <details class="wa-how"><summary>iPhone</summary><ol class="caption">
+        <li>Abra o app <b>Atalhos</b>, toque em <b>+</b> e dê o nome <b>Criar tarefa MK9</b>.</li>
+        <li>Toque no <b>ⓘ</b> e ligue <b>Mostrar na Folha de Compartilhamento</b>; em tipos, deixe só <b>Texto</b>.</li>
+        <li>Adicione a ação <b>Codificar URL</b> (ela usa a Entrada do Atalho).</li>
+        <li>Adicione <b>Abrir URLs</b> com: <code class="wa-url">${esc(location.origin)}/?text=</code> seguido do resultado de <b>URL Codificado</b>.</li>
+        <li>No WhatsApp, segure a mensagem, toque em <b>Encaminhar › Compartilhar</b> e escolha <b>Criar tarefa MK9</b>.</li></ol></details>
+      <div><button type="button" class="btn btn-ghost btn-sm" data-wa-test>Testar com um exemplo</button></div>
+    </section>
     <form class="panel" data-form="password" style="display:flex;flex-direction:column;gap:16px">
       <h2 class="h-card">Trocar senha</h2>
       <div class="field"><label for="p-cur">Senha atual</label><input class="input" id="p-cur" name="currentPassword" type="password" autocomplete="current-password"></div>
@@ -1307,6 +1321,10 @@ function bindProfile(c) {
     setTheme(b.dataset.themePick);
     c.querySelectorAll('[data-theme-pick]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   }));
+  c.querySelector('[data-wa-test]')?.addEventListener('click', () => {
+    const p = parseQuick('Post Black Friday sexta urgente');
+    newTaskDialog({ ...p, mine: true, shared: true });
+  });
   bindGoogle(c);
   const calInput = c.querySelector('#cal-url');
   api('GET', '/api/me/calendar').then(({ url }) => { calInput.value = url; }).catch(() => { calInput.value = 'Não foi possível gerar o link'; });
@@ -1421,7 +1439,7 @@ function statusesDialog(list) {
 }
 
 export function newTaskDialog(preset = {}) {
-  const def = preset.list_id ? listById(preset.list_id) : defaultListForView() || S.lists[0];
+  const def = preset.list_id ? listById(preset.list_id) : (preset.shared && listById(store.get('shareList'))) || defaultListForView() || S.lists[0];
   if (!def) { toast('Crie um espaço e uma lista primeiro'); newSpaceDialog(); return; }
   const opts = S.spaces.map((s) => {
     const ls = S.lists.filter((l) => l.space_id === s.id);
@@ -1433,8 +1451,9 @@ export function newTaskDialog(preset = {}) {
       <div class="field"><label for="t-list">Lista</label><select class="select input" id="t-list" name="list_id">${opts}</select></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div class="field"><label for="t-due">Prazo</label><input class="input" id="t-due" name="due_date" type="date" value="${esc(preset.due_date || '')}"></div>
-        <div class="field"><label for="t-prio">Prioridade</label><select class="select input" id="t-prio" name="priority"><option value="">Sem prioridade</option>${Object.entries(PRIORITY).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('')}</select></div>
+        <div class="field"><label for="t-prio">Prioridade</label><select class="select input" id="t-prio" name="priority"><option value="">Sem prioridade</option>${Object.entries(PRIORITY).map(([k, p]) => `<option value="${k}" ${preset.priority === k ? 'selected' : ''}>${p.label}</option>`).join('')}</select></div>
       </div>
+      ${preset.description ? `<div class="field"><label for="t-desc">Descrição</label><textarea class="textarea" id="t-desc" name="description" rows="4">${esc(preset.description)}</textarea></div>` : ''}
       <label style="display:flex;gap:10px;align-items:center" class="muted"><input type="checkbox" class="check" name="mine" ${S.route.name === 'minhas' || preset.mine ? 'checked' : ''}> Atribuir a mim</label>
       <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-text" data-close>Cancelar</button><button class="btn btn-primary" type="submit">Criar tarefa</button></div>
     </form>`, (m, close) => {
@@ -1443,7 +1462,8 @@ export function newTaskDialog(preset = {}) {
       const f = e.target;
       if (!f.title.value.trim()) return;
       try {
-        const t = await createTask({ title: f.title.value, list_id: f.list_id.value, due_date: f.due_date.value || null, priority: f.priority.value || null, assignees: f.mine.checked ? [S.me.id] : [], status: preset.status });
+        const t = await createTask({ title: f.title.value, list_id: f.list_id.value, due_date: f.due_date.value || null, priority: f.priority.value || null, assignees: f.mine.checked ? [S.me.id] : [], status: preset.status, description: f.description?.value || undefined });
+        if (preset.shared) store.set('shareList', f.list_id.value);
         close();
         go(taskHash(t.id));
       } catch (ex) { fail(ex); }
@@ -1992,7 +2012,19 @@ async function boot() {
   connectEvents();
   loadGoogle().then((g) => { if (g?.connected && S.route.view === 'calendario') renderContent(); });
   await onRoute();
+  openSharedTask();
 }
+// Texto compartilhado do WhatsApp (ou de outro app) chega como /?text=...; vira uma tarefa já preenchida
+function openSharedTask() {
+  const q = new URLSearchParams(location.search);
+  const raw = [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n').trim();
+  if (!raw && !q.has('nova')) return;
+  history.replaceState(null, '', '/' + location.hash);
+  const p = raw ? parseQuick(raw) : {};
+  newTaskDialog({ title: p.title, due_date: p.due_date, priority: p.priority, description: p.description, mine: true, shared: true });
+  if (raw) setTimeout(() => document.querySelector('#t-title')?.focus(), 50);
+}
+if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 let bootedOnce = false;
 setUnauthorizedHandler(() => { es?.close(); closePopover(); closeTask(false); renderAuth(); });
 window.addEventListener('hashchange', () => { if (S.me) onRoute(); });
