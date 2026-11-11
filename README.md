@@ -36,6 +36,7 @@ npm start
 | `COOKIE_SECURE` | `true` quando o site roda em HTTPS | `false` |
 | `REGISTRATION_CODE` | Se definido, só cria conta quem souber esse código | vazio |
 | `ALLOWED_EMAIL_DOMAIN` | Se definido (ex.: `mk9.com.br`), só aceita e-mails desse domínio | vazio |
+| `TRUST_PROXY` | `true` atrás de um proxy (Render, Fly): usa o IP real do visitante no limite de tentativas | `false` |
 
 ## Publicar
 

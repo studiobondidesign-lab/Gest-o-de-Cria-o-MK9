@@ -8,7 +8,7 @@
     "start": "node --no-warnings server.js",
     "dev": "node --no-warnings --watch server.js"
   },
-  "engines": { "node": ">=22.5" },
+  "engines": { "node": ">=22.13" },
   "license": "UNLICENSED",
   "private": true
 }

@@ -108,6 +108,12 @@ function createSession(userId) {
 }
 
 const loginAttempts = new Map();
+// Atrás do proxy do Render (ou outro), o IP real vem no X-Forwarded-For; sem TRUST_PROXY, usa o da conexão
+const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
+function clientIp(req) {
+  const fwd = TRUST_PROXY && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return fwd || req.socket.remoteAddress;
+}
 function throttle(key) {
   const t = Date.now();
   const list = (loginAttempts.get(key) || []).filter((x) => t - x < 15 * 60 * 1000);
@@ -238,7 +244,7 @@ route('GET', '/api/config', () => ({ registrationCode: !!REGISTRATION_CODE, emai
 
 route('POST', '/api/auth/register', async ({ req, res }) => {
   const b = await readJson(req);
-  throttle('reg:' + req.socket.remoteAddress);
+  throttle('reg:' + clientIp(req));
   const name = str(b.name, 80), email = str(b.email, 160).toLowerCase(), password = typeof b.password === 'string' ? b.password : '';
   if (!name) bad('Informe seu nome');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) bad('E-mail inválido');
