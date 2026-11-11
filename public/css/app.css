@@ -828,3 +828,21 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 .wa-how[open] summary::before { transform: rotate(45deg); }
 .wa-how ol { margin: 6px 0 4px; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: var(--text-muted); }
 .wa-url { font-size: 11px; background: var(--surface-2); padding: 1px 6px; border-radius: 4px; word-break: break-all; }
+
+/* ── Responsáveis na nova tarefa ── */
+.who-pick { display: flex; flex-wrap: wrap; gap: 6px; }
+.who { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px 0 4px; border-radius: var(--radius-tags); border: 1px solid var(--hairline-strong);
+  background: transparent; color: var(--text-muted); font: inherit; font-size: var(--text-body-sm); cursor: pointer; transition: background-color 140ms var(--ease-out), border-color 140ms var(--ease-out), color 140ms var(--ease-out), transform 120ms var(--ease-out); }
+.who .avatar { opacity: .55; transition: opacity 140ms var(--ease-out); }
+.who:hover { color: var(--text); }
+.who[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.who[aria-pressed="true"] .avatar { opacity: 1; }
+.who:active { transform: scale(0.97); }
+.tags-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.tpl-warn { color: var(--warning); margin: 0; }
+
+/* ── Modelo de mensagem (perfil) ── */
+.tpl-box, .tpl-cfg { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--hairline); padding-top: 12px; }
+.tpl-pre { margin: 0; padding: 12px 14px; background: var(--bg); border: 1px solid var(--hairline); border-radius: var(--radius-lg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; color: var(--text-muted); white-space: pre-wrap; user-select: all; }
+.tpl-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.tpl-cfg .field { max-width: 360px; }

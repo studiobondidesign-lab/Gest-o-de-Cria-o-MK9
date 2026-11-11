@@ -2,7 +2,7 @@ import {
   esc, icon, PRIORITY, MONTHS_FULL, ymd, today, addDays, fmtDate, dateClass, timeAgo, fmtSize,
   api, setUnauthorizedHandler, toast, fail, openPopover, closePopover, menuPopover, popoverOpen, dialog, confirmDialog, autosize,
 } from './ui.js';
-import { parseQuick } from './quick.js';
+import { parseQuick, parseTemplate, hasTemplate, templateText } from './quick.js';
 import { openTask, closeTask, refreshTask, currentTaskId, taskIsBusy } from './task.js';
 
 // ---------- estado ----------
@@ -1187,7 +1187,18 @@ function profileView() {
         <li>Adicione a ação <b>Codificar URL</b> (ela usa a Entrada do Atalho).</li>
         <li>Adicione <b>Abrir URLs</b> com: <code class="wa-url">${esc(location.origin)}/?text=</code> seguido do resultado de <b>URL Codificado</b>.</li>
         <li>No WhatsApp, segure a mensagem, toque em <b>Encaminhar › Compartilhar</b> e escolha <b>Criar tarefa MK9</b>.</li></ol></details>
-      <div><button type="button" class="btn btn-ghost btn-sm" data-wa-test>Testar com um exemplo</button></div>
+      <div class="tpl-box">
+        <div class="caption muted">Modelo de mensagem: cada campo vai direto para o lugar certo. Os campos são opcionais e a ordem não importa.</div>
+        <pre class="tpl-pre">${esc(templateText(true))}</pre>
+        <div class="tpl-actions"><button type="button" class="btn btn-primary btn-sm" data-tpl-copy>Copiar modelo</button><button type="button" class="btn btn-ghost btn-sm" data-wa-test>Testar com o exemplo</button></div>
+        <p class="caption faint">Também aceita: Início, Status, Cliente (no lugar de Lista), “eu” em Responsável e nomes separados por vírgula.</p>
+      </div>
+      <div class="tpl-cfg">
+        <div class="caption muted">Configuração para o que chegar sem campo</div>
+        <div class="field"><label for="cfg-list">Lista padrão</label><select class="select input" id="cfg-list" data-cfg="list"><option value="">A última que usei</option>${S.spaces.map((sp) => { const ls = S.lists.filter((l) => l.space_id === sp.id); return ls.length ? `<optgroup label="${esc(sp.name)}">${ls.map((l) => `<option value="${l.id}" ${shareCfg().list === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</optgroup>` : ''; }).join('')}</select></div>
+        <label class="g-toggle"><input type="checkbox" class="check" data-cfg="mine" ${shareCfg().mine ? 'checked' : ''}><span>Me colocar como responsável</span></label>
+        <label class="g-toggle"><input type="checkbox" class="check" data-cfg="direct" ${shareCfg().direct ? 'checked' : ''}><span><span>Criar direto, sem tela de revisão</span><span class="caption faint">Só quando a mensagem tem a lista e tudo foi reconhecido</span></span></label>
+      </div>
     </section>
     <form class="panel" data-form="password" style="display:flex;flex-direction:column;gap:16px">
       <h2 class="h-card">Trocar senha</h2>
@@ -1321,10 +1332,15 @@ function bindProfile(c) {
     setTheme(b.dataset.themePick);
     c.querySelectorAll('[data-theme-pick]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   }));
-  c.querySelector('[data-wa-test]')?.addEventListener('click', () => {
-    const p = parseQuick('Post Black Friday sexta urgente');
-    newTaskDialog({ ...p, mine: true, shared: true });
+  c.querySelector('[data-wa-test]')?.addEventListener('click', () => newTaskDialog(sharedPreset(templateText(true))));
+  c.querySelector('[data-tpl-copy]')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(templateText()); toast('Modelo copiado. Cole no WhatsApp e preencha'); } catch { toast('Selecione o modelo e copie'); }
   });
+  c.querySelectorAll('[data-cfg]').forEach((el) => el.addEventListener('change', () => {
+    const cfg = shareCfg();
+    cfg[el.dataset.cfg] = el.type === 'checkbox' ? el.checked : el.value;
+    store.set('shareCfg', cfg); toast('Configuração salva neste aparelho');
+  }));
   bindGoogle(c);
   const calInput = c.querySelector('#cal-url');
   api('GET', '/api/me/calendar').then(({ url }) => { calInput.value = url; }).catch(() => { calInput.value = 'Não foi possível gerar o link'; });
@@ -1445,6 +1461,7 @@ export function newTaskDialog(preset = {}) {
     const ls = S.lists.filter((l) => l.space_id === s.id);
     return ls.length ? `<optgroup label="${esc(s.name)}">${ls.map((l) => `<option value="${l.id}" ${l.id === def.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</optgroup>` : '';
   }).join('');
+  const who = new Set(preset.assignees?.length ? preset.assignees : (S.route.name === 'minhas' || preset.mine ? [S.me.id] : []));
   dialog(`<h2 class="h-section">Nova tarefa</h2>
     <form style="display:flex;flex-direction:column;gap:16px">
       <div class="field"><label for="t-title">Título</label><input class="input" id="t-title" name="title" required placeholder="Ex.: Key visual da campanha" value="${esc(preset.title || '')}"></div>
@@ -1454,15 +1471,25 @@ export function newTaskDialog(preset = {}) {
         <div class="field"><label for="t-prio">Prioridade</label><select class="select input" id="t-prio" name="priority"><option value="">Sem prioridade</option>${Object.entries(PRIORITY).map(([k, p]) => `<option value="${k}" ${preset.priority === k ? 'selected' : ''}>${p.label}</option>`).join('')}</select></div>
       </div>
       ${preset.description ? `<div class="field"><label for="t-desc">Descrição</label><textarea class="textarea" id="t-desc" name="description" rows="4">${esc(preset.description)}</textarea></div>` : ''}
-      <label style="display:flex;gap:10px;align-items:center" class="muted"><input type="checkbox" class="check" name="mine" ${S.route.name === 'minhas' || preset.mine ? 'checked' : ''}> Atribuir a mim</label>
+      <div class="field"><label>Responsáveis</label><div class="who-pick">${S.users.filter((u) => u.active !== 0).map((u) => `<button type="button" class="who" data-who="${u.id}" aria-pressed="${who.has(u.id)}">${avatar(u)}<span>${u.id === S.me.id ? 'Eu' : esc(u.name.split(' ')[0])}</span></button>`).join('')}</div></div>
+      ${preset.tags?.length ? `<div class="field"><label>Etiquetas</label><div class="tags-row">${preset.tags.map((id) => tagHtml(tagById(id))).join('')}</div></div>` : ''}
+      ${preset.unknown?.length ? `<p class="caption tpl-warn">Não encontrei: ${esc(preset.unknown.join(', '))}. Confira antes de criar.</p>` : ''}
       <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-text" data-close>Cancelar</button><button class="btn btn-primary" type="submit">Criar tarefa</button></div>
     </form>`, (m, close) => {
+    m.querySelectorAll('[data-who]').forEach((b) => b.addEventListener('click', () => {
+      const id = b.dataset.who;
+      if (who.has(id)) who.delete(id); else who.add(id);
+      b.setAttribute('aria-pressed', String(who.has(id)));
+    }));
     m.querySelector('form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const f = e.target;
       if (!f.title.value.trim()) return;
       try {
-        const t = await createTask({ title: f.title.value, list_id: f.list_id.value, due_date: f.due_date.value || null, priority: f.priority.value || null, assignees: f.mine.checked ? [S.me.id] : [], status: preset.status, description: f.description?.value || undefined });
+        const list = listById(f.list_id.value);
+        const status = preset.status || (preset.status_name && list?.statuses.find((x) => x.name.toLowerCase() === preset.status_name.toLowerCase())?.id) || undefined;
+        const t = await createTask({ title: f.title.value, list_id: f.list_id.value, due_date: f.due_date.value || null, start_date: preset.start_date || undefined, priority: f.priority.value || null,
+          assignees: [...who], tags: preset.tags, status, description: f.description?.value || undefined });
         if (preset.shared) store.set('shareList', f.list_id.value);
         close();
         go(taskHash(t.id));
@@ -2014,15 +2041,38 @@ async function boot() {
   await onRoute();
   openSharedTask();
 }
-// Texto compartilhado do WhatsApp (ou de outro app) chega como /?text=...; vira uma tarefa já preenchida
-function openSharedTask() {
+// Texto compartilhado do WhatsApp (ou de outro app) chega como /?text=...; vira uma tarefa já preenchida.
+// Se o texto segue o modelo (Tarefa:, Lista:, Prazo:...), cada campo vai para o lugar certo.
+export const shareCfg = () => ({ list: '', mine: true, direct: false, ...store.get('shareCfg', {}) });
+export function sharedPreset(raw) {
+  const cfg = shareCfg();
+  const p = hasTemplate(raw)
+    ? parseTemplate(raw, { lists: S.lists, spaces: S.spaces, users: S.users, tags: S.tags, me: S.me })
+    : parseQuick(raw);
+  const list_id = p.list_id || (listById(cfg.list) ? cfg.list : (listById(store.get('shareList')) ? store.get('shareList') : undefined));
+  return { ...p, list_id, assignees: p.assignees?.length ? p.assignees : (cfg.mine ? [S.me.id] : []), shared: true };
+}
+async function openSharedTask() {
   const q = new URLSearchParams(location.search);
   const raw = [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n').trim();
   if (!raw && !q.has('nova')) return;
   history.replaceState(null, '', '/' + location.hash);
-  const p = raw ? parseQuick(raw) : {};
-  newTaskDialog({ title: p.title, due_date: p.due_date, priority: p.priority, description: p.description, mine: true, shared: true });
-  if (raw) setTimeout(() => document.querySelector('#t-title')?.focus(), 50);
+  if (!raw) { newTaskDialog({ mine: shareCfg().mine, shared: true }); return; }
+  const p = sharedPreset(raw);
+  // Criar direto: só quando nada ficou em dúvida
+  if (shareCfg().direct && p.list_id && !p.unknown?.length) {
+    try {
+      const list = listById(p.list_id);
+      const status = p.status_name ? list?.statuses.find((x) => x.name.toLowerCase() === p.status_name.toLowerCase())?.id : undefined;
+      const t = await createTask({ title: p.title, list_id: p.list_id, due_date: p.due_date || null, start_date: p.start_date || undefined, priority: p.priority || null,
+        assignees: p.assignees, tags: p.tags, status, description: p.description || undefined });
+      toast(`Tarefa criada em ${list?.name || 'sua lista'}`);
+      go(taskHash(t.id));
+      return;
+    } catch (ex) { fail(ex); }
+  }
+  newTaskDialog(p);
+  setTimeout(() => document.querySelector('#t-title')?.focus(), 50);
 }
 if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 let bootedOnce = false;
