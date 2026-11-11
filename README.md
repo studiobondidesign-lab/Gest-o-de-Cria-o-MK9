@@ -44,7 +44,7 @@ npm start
 
 1. Em [render.com](https://render.com), escolha **New > Blueprint** e conecte este repositório. O arquivo `render.yaml` já configura tudo, inclusive um disco de 5 GB em `/var/data`.
 2. Preencha `REGISTRATION_CODE` e/ou `ALLOWED_EMAIL_DOMAIN` para que só a equipe consiga se cadastrar.
-3. O plano precisa ter disco persistente (Starter ou acima). Sem disco, os dados somem a cada deploy.
+3. O plano precisa ser pago (0.5c-512mb ou acima) para ter disco persistente. Sem disco, os dados somem a cada deploy.
 
 ### Railway, Fly.io ou servidor próprio
 

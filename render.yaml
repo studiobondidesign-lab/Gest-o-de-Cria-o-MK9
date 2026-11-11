@@ -2,7 +2,7 @@ services:
   - type: web
     name: mk9-tarefas
     runtime: node
-    plan: starter
+    plan: 0.5c-512mb
     buildCommand: "true"
     startCommand: npm start
     healthCheckPath: /api/config
