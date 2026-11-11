@@ -28,6 +28,16 @@
   --accent-hover: #6375f0;
   --accent-soft: rgba(82, 102, 235, 0.16);
   --on-accent: var(--color-pure-white);
+  --border: var(--color-slate-border);
+  --border-strong: var(--color-mist-border);
+  --scrim: rgba(10, 10, 16, 0.66);
+  --scrim-solid: rgba(10, 10, 16, 0.9);
+  --elev: none;
+  --hc-hairline: rgba(226, 227, 237, 0.28);
+  --hc-hairline-strong: rgba(226, 227, 237, 0.5);
+  --hc-text-faint: #b4b4c0;
+  --hc-text-muted: #dcdce4;
+  color-scheme: dark;
 
   /* Sinalização (tons dessaturados para não competir com o cobalto) */
   --danger: #d98a8a;
@@ -78,4 +88,40 @@
   --radius-inputs: 32px;
   --radius-buttons: 32px;
   --radius-tags: 40px;
+}
+
+/*
+  Modo claro: a mesma marca invertida. Ônix vira o texto, marfim e névoa viram superfícies,
+  o cobalto continua sendo o único destaque. Sinais ficam um tom mais escuros para manter contraste no branco.
+*/
+:root[data-theme="light"] {
+  --bg: #f4f4f8;
+  --surface-1: var(--color-pure-white);
+  --surface-2: var(--color-ivory-text);
+  --surface-3: var(--color-mist-border);
+  --hairline: rgba(23, 23, 33, 0.08);
+  --hairline-strong: rgba(23, 23, 33, 0.14);
+  --text: var(--color-onyx-canvas);
+  --text-muted: #4a4a57;
+  --text-faint: #6b6b78;
+  --accent: var(--color-cobalt);
+  --accent-hover: #4255d6;
+  --accent-soft: rgba(82, 102, 235, 0.1);
+  --border: #a3a3b0;
+  --border-strong: #4a4a57;
+  --scrim: rgba(23, 23, 33, 0.32);
+  --scrim-solid: rgba(23, 23, 33, 0.6);
+  --elev: 0 1px 2px rgba(23, 23, 33, 0.06), 0 8px 24px rgba(23, 23, 33, 0.1);
+  --danger: #b54848;
+  --warning: #94701f;
+  --success: #2f7d5f;
+  --prio-urgent: #c24646;
+  --prio-high: #94701f;
+  --prio-normal: var(--color-cobalt);
+  --prio-low: #6b6b78;
+  --hc-hairline: rgba(23, 23, 33, 0.3);
+  --hc-hairline-strong: rgba(23, 23, 33, 0.55);
+  --hc-text-faint: #4a4a57;
+  --hc-text-muted: #2a2a35;
+  color-scheme: light;
 }

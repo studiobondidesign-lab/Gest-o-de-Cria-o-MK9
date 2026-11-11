@@ -17,6 +17,21 @@ const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem('mk9:' + k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem('mk9:' + k, JSON.stringify(v)); } catch { /* sem storage */ } },
 };
+// ---------- tema (escuro, claro ou o do sistema) ----------
+const lightMq = matchMedia('(prefers-color-scheme: light)');
+export const themePref = () => store.get('theme', 'dark');
+function applyTheme() {
+  const pref = themePref();
+  const t = pref === 'auto' ? (lightMq.matches ? 'light' : 'dark') : pref;
+  if (document.documentElement.dataset.theme === t) return;
+  const root = document.documentElement;
+  root.classList.add('theme-switching');
+  root.dataset.theme = t;
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', t === 'light' ? '#f4f4f8' : '#171721');
+  requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('theme-switching')));
+}
+export function setTheme(pref) { store.set('theme', pref); applyTheme(); }
+lightMq.addEventListener('change', () => { if (themePref() === 'auto') applyTheme(); });
 const collapsedSpaces = new Set(store.get('collapsedSpaces', []));
 const collapsedGroups = new Set();
 // Listas grandes aparecem aos poucos, como o "Carregar mais" do ClickUp: montar milhares de linhas trava a tela
@@ -1131,6 +1146,12 @@ function profileView() {
       <div class="field"><label>Cor do avatar</label><div class="swatches">${SWATCHES.map((c) => `<button type="button" class="swatch ${c === S.me.color ? 'on' : ''}" data-color="${c}" style="background:${c}" aria-label="Cor ${c}"></button>`).join('')}</div></div>
       <div><button class="btn btn-primary" type="submit">Salvar</button></div>
     </form>
+    <section class="panel" style="display:flex;flex-direction:column;gap:12px">
+      <div><h2 class="h-card">Aparência</h2><p class="caption muted" style="margin-top:4px">Vale só para este aparelho. No automático, segue o modo claro ou escuro do sistema.</p></div>
+      <div class="theme-pick" role="group" aria-label="Tema">
+        ${[['dark', 'moon', 'Noturno'], ['light', 'sun', 'Claro'], ['auto', 'monitor', 'Automático']].map(([v, ic, label]) => `<button type="button" data-theme-pick="${v}" aria-pressed="${themePref() === v}">${icon(ic, 'sm')}${label}</button>`).join('')}
+      </div>
+    </section>
     <form class="panel" data-form="password" style="display:flex;flex-direction:column;gap:16px">
       <h2 class="h-card">Trocar senha</h2>
       <div class="field"><label for="p-cur">Senha atual</label><input class="input" id="p-cur" name="currentPassword" type="password" autocomplete="current-password"></div>
@@ -1227,6 +1248,10 @@ function bindProfile(c) {
       e.target.reset(); toast('Senha atualizada');
     } catch (ex) { fail(ex); }
   });
+  c.querySelectorAll('[data-theme-pick]').forEach((b) => b.addEventListener('click', () => {
+    setTheme(b.dataset.themePick);
+    c.querySelectorAll('[data-theme-pick]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  }));
   bindGoogle(c);
   const calInput = c.querySelector('#cal-url');
   api('GET', '/api/me/calendar').then(({ url }) => { calInput.value = url; }).catch(() => { calInput.value = 'Não foi possível gerar o link'; });
@@ -1352,7 +1377,7 @@ export function newTaskDialog(preset = {}) {
       <div class="field"><label for="t-title">Título</label><input class="input" id="t-title" name="title" required placeholder="Ex.: Key visual da campanha" value="${esc(preset.title || '')}"></div>
       <div class="field"><label for="t-list">Lista</label><select class="select input" id="t-list" name="list_id">${opts}</select></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div class="field"><label for="t-due">Prazo</label><input class="input" id="t-due" name="due_date" type="date" style="color-scheme:dark" value="${esc(preset.due_date || '')}"></div>
+        <div class="field"><label for="t-due">Prazo</label><input class="input" id="t-due" name="due_date" type="date" value="${esc(preset.due_date || '')}"></div>
         <div class="field"><label for="t-prio">Prioridade</label><select class="select input" id="t-prio" name="priority"><option value="">Sem prioridade</option>${Object.entries(PRIORITY).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('')}</select></div>
       </div>
       <label style="display:flex;gap:10px;align-items:center" class="muted"><input type="checkbox" class="check" name="mine" ${S.route.name === 'minhas' || preset.mine ? 'checked' : ''}> Atribuir a mim</label>
@@ -1589,12 +1614,14 @@ const ACTIONS = {
     items: () => [
       { id: 'profile', html: `${icon('user', 'sm')}Meu perfil` },
       { id: 'team', html: `${icon('users', 'sm')}Equipe` },
+      { id: 'theme', html: document.documentElement.dataset.theme === 'light' ? `${icon('moon', 'sm')}Modo noturno` : `${icon('sun', 'sm')}Modo claro` },
       { sep: true },
       { id: 'logout', html: `${icon('logout', 'sm')}Sair` },
     ],
     onPick: async (id) => {
       if (id === 'profile') go('#/perfil');
       if (id === 'team') go('#/membros');
+      if (id === 'theme') { setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'); if (S.route.name === 'perfil') renderContent(); }
       if (id === 'logout') { await api('POST', '/api/auth/logout').catch(() => {}); location.hash = ''; location.reload(); }
     },
   }),

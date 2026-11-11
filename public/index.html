@@ -4,8 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MK9 Tarefas</title>
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#171721">
+  <script>
+    // Aplica o tema antes de desenhar a página, para não piscar
+    (function () {
+      var pref = 'dark';
+      try { pref = JSON.parse(localStorage.getItem('mk9:theme')) || 'dark'; } catch (e) {}
+      var mq = window.matchMedia('(prefers-color-scheme: light)');
+      var t = pref === 'auto' ? (mq.matches ? 'light' : 'dark') : pref;
+      document.documentElement.dataset.theme = t;
+      document.querySelector('meta[name=theme-color]').content = t === 'light' ? '#f4f4f8' : '#171721';
+    })();
+  </script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

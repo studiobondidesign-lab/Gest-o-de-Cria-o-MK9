@@ -217,7 +217,7 @@ function render() {
             return `<div class="att">${img ? `<button class="thumb" data-proof="${a.id}" title="Abrir para revisar">${`<img src="/api/attachments/${a.id}?inline=1" alt="${esc(a.filename)}" loading="lazy">`}${pins.length ? `<span class="pin-count ${openPins ? '' : 'ok'}">${icon('pin', 'sm')}${openPins || '✓'}</span>` : ''}</button>`
               : `<a class="thumb" href="/api/attachments/${a.id}" target="_blank" rel="noopener">${icon('file', 'lg')}</a>`}
               <div class="meta"><div class="name" title="${esc(a.filename)}">${esc(a.filename)}</div><div class="faint">${fmtSize(a.size)} · ${esc(userById(a.user_id)?.name.split(' ')[0] || '')}${img ? ' · <span style="color:var(--text-muted)">revisar</span>' : ''}</div></div>
-              <a class="icon-btn" style="position:absolute;top:6px;left:6px;background:rgba(23,23,33,.8)" href="/api/attachments/${a.id}" download aria-label="Baixar">${icon('download', 'sm')}</a>
+              <a class="icon-btn" style="position:absolute;top:6px;left:6px;background:color-mix(in srgb, var(--surface-1) 85%, transparent)" href="/api/attachments/${a.id}" download aria-label="Baixar">${icon('download', 'sm')}</a>
               <button class="icon-btn del" data-att-del="${a.id}" aria-label="Remover anexo">${icon('trash', 'sm')}</button></div>`;
           }).join('')}</div>` : ''}
           <label class="dropzone" data-dropzone>${icon('paperclip', 'sm')} Arraste arquivos aqui ou <u>clique para enviar</u> (até 25 MB)<input type="file" multiple hidden data-file></label>
@@ -227,7 +227,7 @@ function render() {
           <div class="section-title"><h3 class="h-card">Registro de tempo <span class="faint caption">${fmtMinutes(t.time_spent)}</span></h3></div>
           <form class="time-add" data-time-form>
             <input class="input input-sm" name="dur" placeholder="Tempo (ex.: 1h30)" aria-label="Tempo gasto" required>
-            <input class="input input-sm" name="date" type="date" value="${today()}" style="color-scheme:dark;width:150px" aria-label="Dia">
+            <input class="input input-sm" name="date" type="date" value="${today()}" style="width:150px" aria-label="Dia">
             <input class="input input-sm" name="note" placeholder="O que foi feito (opcional)" aria-label="Nota">
             <button class="btn btn-ghost btn-sm" type="submit">Lançar</button>
           </form>
