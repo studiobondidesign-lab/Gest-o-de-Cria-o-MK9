@@ -70,7 +70,7 @@ export const statusOf = (task) => listById(task.list_id)?.statuses.find((s) => s
 export const isDone = (task) => statusOf(task).type === 'done';
 
 export const initials = (name = '?') => name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase() || '?';
-export const avatar = (u, size = '') => u ? `<span class="avatar ${size}" style="background:${esc(u.color)}" title="${esc(u.name)}">${esc(initials(u.name))}</span>` : '';
+export const avatar = (u, size = '') => u ? `<span class="avatar ${size} ${u.avatar ? 'has-photo' : ''}" style="background:${esc(u.color)}" title="${esc(u.name)}">${u.avatar ? `<img src="${esc(u.avatar)}" alt="" loading="lazy" decoding="async">` : esc(initials(u.name))}</span>` : '';
 export const avatars = (ids, max = 3) => {
   const us = ids.map(userById).filter(Boolean);
   if (!us.length) return `<span class="avatar-empty">${icon('user', 'sm')}</span>`;
@@ -1137,11 +1137,34 @@ function membersView() {
 }
 
 const SWATCHES = ['#7d8ce0', '#5fae8f', '#c9a55c', '#9b87d9', '#d98a8a', '#6fb3c4', '#b58ac9', '#a3a86b', '#8a9bb0', '#c98f6b'];
+async function squarePhoto(file, size) {
+  let img;
+  try { img = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch {
+    img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('Não foi possível ler essa imagem. Use JPG, PNG ou WebP.')); i.src = URL.createObjectURL(file); });
+  }
+  const w = img.width, h = img.height, side = Math.min(w, h);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size);
+  const toBlob = (type, q) => new Promise((ok) => canvas.toBlob(ok, type, q));
+  const blob = (await toBlob('image/webp', 0.86)) || (await toBlob('image/jpeg', 0.88));
+  if (!blob) throw new Error('Não foi possível ler essa imagem');
+  // Safari antigo devolve PNG quando não sabe gerar WebP: nesse caso manda JPEG, que é menor
+  return blob.type === 'image/webp' ? blob : await toBlob('image/jpeg', 0.88);
+}
 function profileView() {
   return `<div class="page-narrow" style="max-width:640px">
     <h1 class="h-display" style="margin-bottom:24px">Seu perfil</h1>
     <form class="panel" data-form="profile" style="display:flex;flex-direction:column;gap:16px">
-      <div style="display:flex;align-items:center;gap:16px">${avatar(S.me, 'lg')}<div><div class="h-card">${esc(S.me.name)}</div><div class="caption faint">${esc(S.me.email)}</div></div></div>
+      <div class="me-photo">
+        <label class="photo-btn" title="Trocar foto">${avatar(S.me, 'lg')}<span class="photo-edit" aria-hidden="true">${icon('edit', 'sm')}</span>
+          <input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/*" class="sr-only" data-photo aria-label="Trocar foto do perfil"></label>
+        <div style="min-width:0"><div class="h-card">${esc(S.me.name)}</div><div class="caption faint">${esc(S.me.email)}</div>
+          <div class="photo-actions"><label class="link-btn caption">${S.me.avatar ? 'Trocar foto' : 'Adicionar foto'}<input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/*" class="sr-only" data-photo></label>${S.me.avatar ? '<button type="button" class="link-btn caption" data-photo-remove>Remover</button>' : ''}</div></div>
+      </div>
       <div class="field"><label for="p-name">Nome</label><input class="input" id="p-name" name="name" value="${esc(S.me.name)}"></div>
       <div class="field"><label>Cor do avatar</label><div class="swatches">${SWATCHES.map((c) => `<button type="button" class="swatch ${c === S.me.color ? 'on' : ''}" data-color="${c}" style="background:${c}" aria-label="Cor ${c}"></button>`).join('')}</div></div>
       <div><button class="btn btn-primary" type="submit">Salvar</button></div>
@@ -1247,6 +1270,24 @@ function bindProfile(c) {
       await api('PATCH', '/api/me', { currentPassword: e.target.currentPassword.value, newPassword: e.target.newPassword.value });
       e.target.reset(); toast('Senha atualizada');
     } catch (ex) { fail(ex); }
+  });
+  // Foto: recorta o centro em quadrado e reduz para 256 px no próprio navegador, antes de enviar
+  const afterPhoto = async (user) => { S.me = user; await loadBootstrap(); renderSidebar(); renderContent(); };
+  c.querySelectorAll('[data-photo]').forEach((inp) => inp.addEventListener('change', async () => {
+    const file = inp.files?.[0];
+    inp.value = '';
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) { toast('Escolha uma imagem de até 20 MB', { error: true }); return; }
+    const holder = c.querySelector('.photo-btn');
+    holder?.classList.add('busy');
+    try {
+      const blob = await squarePhoto(file, 256);
+      const { user } = await api('PUT', '/api/me/avatar', blob);
+      await afterPhoto(user); toast('Foto atualizada');
+    } catch (ex) { holder?.classList.remove('busy'); fail(ex.message ? ex : new Error('Não foi possível ler essa imagem')); }
+  }));
+  c.querySelector('[data-photo-remove]')?.addEventListener('click', async () => {
+    try { const { user } = await api('DELETE', '/api/me/avatar'); await afterPhoto(user); toast('Foto removida'); } catch (ex) { fail(ex); }
   });
   c.querySelectorAll('[data-theme-pick]').forEach((b) => b.addEventListener('click', () => {
     setTheme(b.dataset.themePick);

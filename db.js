@@ -85,6 +85,7 @@ const COLUMNS = [
   ['comments', 'pin_y', 'REAL'],
   ['comments', 'resolved', 'INTEGER NOT NULL DEFAULT 0'],
   ['users', 'calendar_token', 'TEXT'],
+  ['users', 'avatar', 'TEXT'],
 ];
 
 export function openDb(file) {

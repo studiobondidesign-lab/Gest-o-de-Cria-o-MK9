@@ -20,6 +20,8 @@ const SESSION_DAYS = 30;
 const MAX_UPLOAD = 25 * 1024 * 1024;
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const AVATAR_DIR = path.join(UPLOAD_DIR, 'avatars');
+fs.mkdirSync(AVATAR_DIR, { recursive: true });
 const db = openDb(path.join(DATA_DIR, 'mk9.db'));
 
 // ---------- utilidades ----------
@@ -101,7 +103,8 @@ function currentUser(req) {
   return row || null;
 }
 function publicUser(u) {
-  return { id: u.id, name: u.name, email: u.email, color: u.color, role: u.role, created_at: u.created_at };
+  return { id: u.id, name: u.name, email: u.email, color: u.color, role: u.role, created_at: u.created_at,
+    avatar: u.avatar ? `/api/avatars/${u.id}?v=${u.avatar}` : null };
 }
 function createSession(userId) {
   const token = crypto.randomBytes(32).toString('base64url');
@@ -349,6 +352,37 @@ route('GET', '/api/calendar/:file', ({ req, res, params }) => {
   return undefined;
 }, { auth: false });
 
+// ---------- foto do perfil ----------
+// O navegador já recorta e reduz a foto (quadrada, 256 px); aqui só conferimos o formato e guardamos.
+const AVATAR_TYPES = [['image/jpeg', [0xff, 0xd8, 0xff]], ['image/png', [0x89, 0x50, 0x4e, 0x47]], ['image/webp', [0x52, 0x49, 0x46, 0x46]]];
+const avatarFile = (userId) => path.join(AVATAR_DIR, userId);
+route('PUT', '/api/me/avatar', async ({ req, user }) => {
+  const buf = await readBody(req, 2 * 1024 * 1024);
+  const type = AVATAR_TYPES.find(([, magic]) => magic.every((b, i) => buf[i] === b));
+  if (!buf.length || !type || (type[0] === 'image/webp' && buf.toString('latin1', 8, 12) !== 'WEBP')) bad('Envie uma imagem JPG, PNG ou WebP');
+  fs.writeFileSync(avatarFile(user.id), buf);
+  const ver = `${type[0].split('/')[1]}.${Date.now().toString(36)}`;
+  db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(ver, user.id);
+  broadcast({ type: 'users' });
+  return { user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(user.id)) };
+});
+route('DELETE', '/api/me/avatar', ({ user }) => {
+  fs.rm(avatarFile(user.id), () => {});
+  db.prepare('UPDATE users SET avatar = NULL WHERE id = ?').run(user.id);
+  broadcast({ type: 'users' });
+  return { user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(user.id)) };
+});
+route('GET', '/api/avatars/:id', ({ params, res }) => {
+  const u = db.prepare('SELECT avatar FROM users WHERE id = ?').get(params.id);
+  if (!u?.avatar || !fs.existsSync(avatarFile(params.id))) notFound('Sem foto');
+  const buf = fs.readFileSync(avatarFile(params.id));
+  // O endereço muda a cada troca de foto (?v=), então pode ficar em cache por muito tempo
+  res.writeHead(200, { 'Content-Type': 'image/' + u.avatar.split('.')[0], 'Content-Length': buf.length,
+    'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+  res.end(buf);
+  return undefined;
+});
+
 // ---------- Google Agenda (conta conectada) ----------
 google = setupGoogle({ db, route, broadcast, logActivity, now, HttpError, readJson, publicUrl });
 
@@ -393,7 +427,8 @@ route('PATCH', '/api/users/:id', async ({ req, user, params }) => {
 // Bootstrap
 route('GET', '/api/bootstrap', ({ user }) => ({
   me: publicUser(user),
-  users: db.prepare('SELECT id, name, email, color, role, active, created_at FROM users ORDER BY name').all(),
+  users: db.prepare('SELECT id, name, email, color, role, active, created_at, avatar FROM users ORDER BY name').all()
+    .map((u) => ({ ...u, avatar: u.avatar ? `/api/avatars/${u.id}?v=${u.avatar}` : null })),
   spaces: db.prepare('SELECT * FROM spaces WHERE archived = 0 ORDER BY position, created_at').all(),
   folders: db.prepare('SELECT * FROM folders WHERE archived = 0 ORDER BY position, created_at').all(),
   lists: db.prepare('SELECT * FROM lists WHERE archived = 0 ORDER BY position, created_at').all().map(listRow),
