@@ -74,6 +74,15 @@ CREATE TABLE IF NOT EXISTS google_events (
   task_id TEXT NOT NULL, user_id TEXT NOT NULL, event_id TEXT NOT NULL, pushed_start TEXT, pushed_due TEXT, pushed_title TEXT, pushed_hash TEXT,
   PRIMARY KEY (task_id, user_id));
 CREATE INDEX IF NOT EXISTS idx_gevents_user ON google_events(user_id);
+CREATE TABLE IF NOT EXISTS google_calendars (
+  user_id TEXT NOT NULL, cal_id TEXT NOT NULL, name TEXT, color TEXT, role TEXT, is_primary INTEGER NOT NULL DEFAULT 0,
+  selected INTEGER NOT NULL DEFAULT 1, last_full INTEGER, last_check TEXT,
+  channel_id TEXT, channel_token TEXT, resource_id TEXT, channel_exp INTEGER,
+  PRIMARY KEY (user_id, cal_id));
+CREATE TABLE IF NOT EXISTS google_cache (
+  user_id TEXT NOT NULL, cal_id TEXT NOT NULL, event_id TEXT NOT NULL, start_date TEXT, end_date TEXT, data TEXT NOT NULL,
+  PRIMARY KEY (user_id, cal_id, event_id));
+CREATE INDEX IF NOT EXISTS idx_gcache_range ON google_cache(user_id, start_date);
 `;
 
 // Colunas adicionadas depois da primeira versão (bancos já existentes recebem via ALTER TABLE)
@@ -86,6 +95,10 @@ const COLUMNS = [
   ['comments', 'resolved', 'INTEGER NOT NULL DEFAULT 0'],
   ['users', 'calendar_token', 'TEXT'],
   ['users', 'avatar', 'TEXT'],
+  ['google_accounts', 'target_cal', 'TEXT'],
+  ['google_accounts', 'lists_at', 'INTEGER'],
+  ['google_accounts', 'reconciled_at', 'INTEGER'],
+  ['google_events', 'cal_id', 'TEXT'],
 ];
 
 export function openDb(file) {

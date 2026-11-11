@@ -44,11 +44,14 @@ npm start
 
 Cada pessoa conecta a própria conta em **Meu perfil › Google Agenda**. Depois disso:
 
-- tarefas com prazo atribuídas a ela viram eventos de dia inteiro na agenda principal (e somem se a tarefa for arquivada, excluída ou tiver o responsável trocado);
-- os compromissos da agenda aparecem no calendário da plataforma, com **Criar tarefa** a partir de um evento;
-- mudou a data ou o nome do evento no Google, a tarefa muda junto (a cada 10 minutos ou ao abrir o calendário).
+- todas as agendas da conta (principal, compartilhadas, feriados) aparecem no calendário da plataforma, cada uma com sua cor; a pessoa escolhe quais mostrar;
+- tarefas com prazo atribuídas a ela viram eventos de dia inteiro na agenda que ela escolher (e somem se a tarefa for arquivada, excluída ou trocar de responsável);
+- os compromissos têm **Criar tarefa** a partir do evento;
+- mudou a data ou o nome do evento no Google, a tarefa muda junto.
 
-Para ligar, crie um ID do cliente OAuth no Google Cloud (tipo **Aplicativo da Web**), com o URI de redirecionamento `https://SEU-ENDERECO/api/google/callback`, ative a **Google Calendar API** e preencha `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET`. Escopo usado: `calendar.events` (só eventos, não lê configurações nem outras agendas).
+Velocidade: o que muda na plataforma vai para o Google em cerca de 1 segundo. O Google avisa o app a cada mudança (webhook em `/api/google/webhook`, só com endereço `https`), e o app ainda confere tudo a cada minuto caso um aviso se perca. O calendário lê uma cópia local dos eventos, então abre na hora.
+
+Para ligar, crie um ID do cliente OAuth no Google Cloud (tipo **Aplicativo da Web**), com o URI de redirecionamento `https://SEU-ENDERECO/api/google/callback`, ative a **Google Calendar API** e preencha `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET`. Escopos: `calendar.events` e `calendar.calendarlist.readonly`.
 
 Sem essas variáveis, o perfil mostra só o link de agenda (iCal), que funciona em qualquer app de agenda mas é somente leitura.
 

@@ -991,7 +991,7 @@ const server = http.createServer(async (req, res) => {
   if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
   try {
     // Proteção CSRF simples: requisições que alteram dados precisam vir do próprio app
-    if (req.method !== 'GET' && req.headers['x-requested-with'] !== 'mk9') throw new HttpError(403, 'Requisição bloqueada');
+    if (req.method !== 'GET' && req.headers['x-requested-with'] !== 'mk9' && url.pathname !== '/api/google/webhook') throw new HttpError(403, 'Requisição bloqueada');
     for (const r of routes) {
       if (r.method !== req.method) continue;
       const m = url.pathname.match(r.re);

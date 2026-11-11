@@ -765,7 +765,7 @@ function gEventsFor(from, to) {
   if (!S.google?.connected) return [];
   const key = from + '_' + to;
   const c = gCache.get(key);
-  if (c && (c.loading || Date.now() - c.at < 120000)) return c.events;
+  if (c && (c.loading || Date.now() - c.at < 30000)) return c.events;
   const entry = { events: c?.events || [], at: Date.now(), loading: true };
   gCache.set(key, entry);
   api('GET', `/api/google/events?from=${from}&to=${to}`).then((r) => {
@@ -789,12 +789,12 @@ function gWhen(e) {
   const end = new Date(e.end).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   return `${fmtDate(e.start_date)}, ${gTime(e)} às ${end}`;
 }
-const gChip = (e, cls = 'cal-gev') => `<button type="button" class="${cls}" data-act="gev" data-gev="${esc(e.id)}" title="${esc(e.title)} · Google Agenda">${gTime(e) ? `<span class="tm">${gTime(e)}</span>` : ''}<span class="ellipsis">${esc(e.title)}</span></button>`;
+const gChip = (e, cls = 'cal-gev') => `<button type="button" class="${cls}" data-act="gev" data-gev="${esc(e.id)}" style="--gc:${esc(e.color || '#7d8ce0')}" title="${esc(e.title)} · ${esc(e.calendar || 'Google Agenda')}">${gTime(e) ? `<span class="tm">${gTime(e)}</span>` : ''}<span class="ellipsis">${esc(e.title)}</span></button>`;
 function gFind(id) { for (const c of gCache.values()) { const e = c.events.find((x) => x.id === id); if (e) return e; } return null; }
 function showGEvent(el, e) {
   openPopover(el, (p) => {
     p.innerHTML = `<div class="gev-pop">
-      <div class="gev-src caption faint">${icon('calendar', 'sm')}Google Agenda</div>
+      <div class="gev-src caption faint"><span class="gev-dot" style="--gc:${esc(e.color || '#7d8ce0')}"></span>${esc(e.calendar || 'Google Agenda')}</div>
       <div class="h-card">${esc(e.title)}</div>
       <div class="caption muted">${esc(gWhen(e))}</div>
       ${e.location ? `<div class="caption muted ellipsis">${esc(e.location)}</div>` : ''}
@@ -1210,8 +1210,12 @@ function googlePanel() {
   const when = g.last_sync ? new Date(g.last_sync).toLocaleString('pt-BR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : null;
   return `${head}<p class="caption muted">Conectado como <b>${esc(g.email || 'sua conta Google')}</b></p></div></div>
     <label class="g-toggle"><input type="checkbox" class="check" data-g="sync" ${g.sync_tasks ? 'checked' : ''}><span><b>Enviar meus prazos para a agenda</b><span class="caption faint">${g.sync_tasks ? `${g.events} tarefa${g.events !== 1 ? 's' : ''} na agenda agora` : 'Desligado: nenhuma tarefa vai para a agenda'}</span></span></label>
+    ${g.sync_tasks && g.calendars.some((c) => c.writable) ? `<div class="field g-target"><label for="g-target">Os prazos entram na agenda</label>
+      <select class="select input" id="g-target" data-g="target">${g.calendars.filter((c) => c.writable).map((c) => `<option value="${esc(c.id)}" ${c.id === g.target_cal ? 'selected' : ''}>${esc(c.name)}${c.primary ? ' (principal)' : ''}</option>`).join('')}</select></div>` : ''}
+    ${g.calendars.length ? `<div class="g-cals"><div class="caption muted">Agendas que aparecem no calendário da plataforma</div>
+      ${g.calendars.map((c) => `<label class="g-cal"><input type="checkbox" class="sel-box" data-g-cal="${esc(c.id)}" ${c.selected ? 'checked' : ''} style="--gc:${esc(c.color)}"><span class="ellipsis">${esc(c.name)}</span>${c.primary ? '<span class="caption faint">principal</span>' : ''}</label>`).join('')}</div>` : ''}
     ${g.last_error ? `<p class="caption g-error">A última sincronização falhou. Tente de novo em instantes.</p>` : ''}
-    <div class="g-actions"><button class="btn btn-ghost btn-sm" type="button" data-g="sync-now">Sincronizar agora</button><span class="caption faint">${when ? `Última sincronização: ${when}` : 'Sincronizando…'}</span><span style="flex:1"></span><button class="link-btn caption" type="button" data-g="disconnect">Desconectar</button></div>`;
+    <div class="g-actions"><button class="btn btn-ghost btn-sm" type="button" data-g="sync-now">Sincronizar agora</button><span class="caption faint">${when ? `${g.instant ? 'Atualização instantânea' : 'Confere a cada minuto'} · última às ${when.split(', ').pop()}` : 'Sincronizando…'}</span><span style="flex:1"></span><button class="link-btn caption" type="button" data-g="disconnect">Desconectar</button></div>`;
 }
 export async function loadGoogle() {
   if (!S.config.google) { S.google = null; return null; }
@@ -1237,6 +1241,16 @@ function bindGoogle(c) {
     }
   });
   panel.addEventListener('change', async (e) => {
+    if (e.target.dataset.gCal) {
+      e.target.disabled = true;
+      try { S.google = await api('PATCH', '/api/google', { calendars: { [e.target.dataset.gCal]: e.target.checked } }); gCache.clear(); } catch (ex) { fail(ex); }
+      paint(); return;
+    }
+    if (e.target.dataset.g === 'target') {
+      e.target.disabled = true;
+      try { S.google = await api('PATCH', '/api/google', { target_cal: e.target.value }); toast('Prazos movidos para ' + e.target.selectedOptions[0].textContent); } catch (ex) { fail(ex); }
+      paint(); return;
+    }
     if (e.target.dataset.g !== 'sync') return;
     e.target.disabled = true;
     try { S.google = await api('PATCH', '/api/google', { sync_tasks: e.target.checked }); toast(e.target.checked ? 'Prazos indo para a sua agenda' : 'Prazos removidos da sua agenda'); } catch (ex) { fail(ex); }
@@ -1728,7 +1742,7 @@ const ACTIONS = {
     const gl = [...gCache.values()].flatMap((c) => c.events).filter((e, i, a) => e.start_date <= date && date <= e.end_date && a.findIndex((x) => x.id === e.id) === i);
     menuPopover(el, {
       items: () => [...list.map((t) => ({ id: t.id, html: `${statusPill(statusOf(t))}<span class="ellipsis">${esc(t.title)}</span>` })),
-        ...gl.map((e) => ({ id: 'g:' + e.id, html: `<span class="gev-dot"></span>${gTime(e) ? `<span class="caption faint">${gTime(e)}</span>` : ''}<span class="ellipsis">${esc(e.title)}</span>` }))],
+        ...gl.map((e) => ({ id: 'g:' + e.id, html: `<span class="gev-dot" style="--gc:${esc(e.color || '#7d8ce0')}"></span>${gTime(e) ? `<span class="caption faint">${gTime(e)}</span>` : ''}<span class="ellipsis">${esc(e.title)}</span>` }))],
       onPick: (id) => { if (id.startsWith('g:')) { const e = gFind(id.slice(2)); if (e) setTimeout(() => showGEvent(el, e)); } else go(taskHash(id)); },
     });
   },
@@ -1955,7 +1969,8 @@ function connectEvents() {
     }
     if (ev.type === 'google' && ev.users.includes(S.me?.id)) {
       gCache.clear();
-      loadGoogle().then(() => { if (S.route.name === 'perfil' || S.route.view === 'calendario') renderContent(); });
+      if (ev.events) { if (S.route.view === 'calendario' && !document.querySelector('.popover')) renderContent(); }
+      else loadGoogle().then(() => { if (S.route.name === 'perfil' || S.route.view === 'calendario') renderContent(); });
     }
     if (ev.type === 'notification' && ev.users.includes(S.me?.id)) {
       api('GET', '/api/bootstrap').then((b) => { S.unread = b.unread; renderSidebar(); if (S.route.name === 'entrada') renderContent(); }).catch(() => {});
