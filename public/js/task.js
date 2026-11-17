@@ -22,7 +22,8 @@ export async function openTask(id) {
     overlay.innerHTML = '<div class="modal" role="dialog" aria-modal="true" aria-label="Tarefa"><div class="loading">Carregando…</div></div>';
     document.body.append(overlay);
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeTask(); });
-    state = { id, data: null, overlay };
+    state = { id, data: null, overlay, opener: document.activeElement };
+    overlay.querySelector('.modal').tabIndex = -1;
     bind(overlay);
     document.addEventListener('keydown', onKey);
   }
@@ -37,7 +38,19 @@ export async function openTask(id) {
   await refreshTask();
 }
 
+// Mantém o Tab dentro da tarefa aberta (a menos que haja um menu ou diálogo por cima)
+function trapTab(e) {
+  if (document.querySelector('.popover, .modal-sm, .palette, .proof')) return;
+  const els = [...state.overlay.querySelectorAll('a[href], button, input, textarea, select, [tabindex]:not([tabindex="-1"])')].filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!els.length) return;
+  const first = els[0], last = els[els.length - 1], a = document.activeElement;
+  if (!state.overlay.contains(a) || a === state.overlay.querySelector('.modal')) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+  else if (e.shiftKey && a === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
+}
+
 function onKey(e) {
+  if (e.key === 'Tab' && state) return trapTab(e);
   if (e.key === 'Escape' && state && !document.querySelector('.popover, .modal-sm, .palette')) {
     if (document.activeElement && state.overlay.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') { document.activeElement.blur(); return; }
     closeTask();
@@ -48,7 +61,8 @@ export function closeTask(updateHash = true) {
   if (!state) return;
   const a = document.activeElement;
   if (a && state.overlay.contains(a)) a.blur(); // dispara salvamentos pendentes
-  const ov = state.overlay;
+  const ov = state.overlay, opener = state.opener;
+  if (opener?.isConnected && opener !== document.body) opener.focus({ preventScroll: true });
   ov.classList.add('leaving');
   setTimeout(() => ov.remove(), 160);
   state = null;
@@ -167,7 +181,7 @@ function render() {
           <span class="v">${statusPill(st, 'button', 'data-t="status"', 'lg')}
             ${!isDone(t) ? `<button class="icon-btn" data-t="complete" title="Marcar como concluída" aria-label="Concluir">${icon('check', 'sm')}</button>` : ''}</span>
           <span class="k">${icon('users', 'sm')}Responsáveis</span>
-          <span class="v"><button class="prop-btn" data-t="assignees">${t.assignees.length ? t.assignees.map((id) => { const u = userById(id); return u ? `<span style="display:inline-flex;align-items:center;gap:6px">${avatar(u)}<span class="caption">${esc(u.name.split(' ')[0])}</span></span>` : ''; }).join('') : `<span class="avatar-empty">${icon('plus', 'sm')}</span><span class="faint">Atribuir</span>`}</button></span>
+          <span class="v"><button class="prop-btn" data-t="assignees" aria-label="Responsáveis: ${esc(t.assignees.map((id) => userById(id)?.name).filter(Boolean).join(', ') || 'ninguém')}">${t.assignees.length ? t.assignees.map((id) => { const u = userById(id); return u ? `<span style="display:inline-flex;align-items:center;gap:6px">${avatar(u)}<span class="caption">${esc(u.name.split(' ')[0])}</span></span>` : ''; }).join('') : `<span class="avatar-empty">${icon('plus', 'sm')}</span><span class="faint">Atribuir</span>`}</button></span>
           <span class="k">${icon('calendar', 'sm')}Início</span>
           <span class="v"><input type="date" class="date-input" data-date="start_date" value="${esc(t.start_date || '')}" aria-label="Data de início"></span>
           <span class="k">${icon('calendar', 'sm')}Prazo</span>
@@ -181,7 +195,7 @@ function render() {
           <span class="v"><button class="prop-btn ${myTimer ? 'timer-on' : ''}" data-t="timer">${icon(myTimer ? 'stop' : 'play', 'sm')}${myTimer ? `<span data-timer-elapsed data-since="${esc(myTimer.started_at)}">${elapsed(myTimer.started_at)}</span>` : 'Iniciar'}</button>
             <span class="caption ${t.time_estimate && t.time_spent > t.time_estimate ? '' : 'faint'}" style="${t.time_estimate && t.time_spent > t.time_estimate ? 'color:var(--warning)' : ''}">${fmtMinutes(t.time_spent)}${t.time_estimate ? ' de ' + fmtMinutes(t.time_estimate) : ' registrado'}</span></span>
           <span class="k">${icon('tag', 'sm')}Etiquetas</span>
-          <span class="v">${t.tags.map((id) => tagHtml(tagById(id), true)).join('')}<button class="prop-btn" data-t="tags" style="margin-left:0">${icon('plus', 'sm')}${t.tags.length ? '' : '<span class="faint">Adicionar</span>'}</button></span>
+          <span class="v">${t.tags.map((id) => tagHtml(tagById(id), true)).join('')}<button class="prop-btn" data-t="tags" ${t.tags.length ? 'style="margin-left:0"' : ''} aria-label="Adicionar ou remover etiquetas">${icon('plus', 'sm')}${t.tags.length ? '' : '<span class="faint">Adicionar</span>'}</button></span>
         </div>
 
         <section>
@@ -222,12 +236,12 @@ function render() {
             const img = /^image\/(png|jpe?g|gif|webp)$/.test(a.mime);
             const pins = pinsBy[a.id] || [], openPins = pins.filter((c) => !c.resolved).length;
             return `<div class="att">${img ? `<button class="thumb" data-proof="${a.id}" title="Abrir para revisar">${`<img src="/api/attachments/${a.id}?inline=1" alt="${esc(a.filename)}" loading="lazy">`}${pins.length ? `<span class="pin-count ${openPins ? '' : 'ok'}">${icon('pin', 'sm')}${openPins || '✓'}</span>` : ''}</button>`
-              : `<a class="thumb" href="/api/attachments/${a.id}" target="_blank" rel="noopener">${icon('file', 'lg')}</a>`}
+              : `<a class="thumb" href="/api/attachments/${a.id}" target="_blank" rel="noopener" aria-label="Abrir ${esc(a.filename)}">${icon('file', 'lg')}</a>`}
               <div class="meta"><div class="name" title="${esc(a.filename)}">${esc(a.filename)}</div><div class="faint">${fmtSize(a.size)} · ${esc(userById(a.user_id)?.name.split(' ')[0] || '')}${img ? ' · <span style="color:var(--text-muted)">revisar</span>' : ''}</div></div>
               <a class="icon-btn" style="position:absolute;top:6px;left:6px;background:color-mix(in srgb, var(--surface-1) 85%, transparent)" href="/api/attachments/${a.id}" download aria-label="Baixar">${icon('download', 'sm')}</a>
               <button class="icon-btn del" data-att-del="${a.id}" aria-label="Remover anexo">${icon('trash', 'sm')}</button></div>`;
           }).join('')}</div>` : ''}
-          <label class="dropzone" data-dropzone>${icon('paperclip', 'sm')} Arraste arquivos aqui ou <u>clique para enviar</u> (até 25 MB)<input type="file" multiple hidden data-file></label>
+          <label class="dropzone" data-dropzone>${icon('paperclip', 'sm')} <span class="pointer-only">Arraste arquivos aqui ou <u>clique para enviar</u></span><span class="touch-only"><u>Toque para escolher arquivos</u></span> (até 25 MB)<input type="file" multiple hidden data-file></label>
         </section>
 
         <section>
@@ -251,20 +265,22 @@ function render() {
           ${feed.map((f) => f.kind === 'a'
             ? `<div class="feed-act"><span><b>${esc(userById(f.a.user_id)?.name || 'Alguém')}</b> ${activityText(f.a)}</span><span class="when">${timeAgo(f.at)}</span></div>`
             : `<div class="comment">${avatar(userById(f.c.user_id))}<div class="bubble"><div class="who"><b>${esc(userById(f.c.user_id)?.name || 'Alguém')}</b><span class="when">${timeAgo(f.at)}${f.c.edited_at ? ' · editado' : ''}</span>
-                ${f.c.user_id === S.me.id || S.me.role === 'admin' ? `<span class="acts">${f.c.user_id === S.me.id ? `<button class="icon-btn" style="width:22px;height:22px" data-c-edit="${f.c.id}" aria-label="Editar">${icon('edit', 'sm')}</button>` : ''}<button class="icon-btn" style="width:22px;height:22px" data-c-del="${f.c.id}" aria-label="Excluir">${icon('trash', 'sm')}</button></span>` : ''}</div>
+                ${f.c.user_id === S.me.id || S.me.role === 'admin' ? `<span class="acts">${f.c.user_id === S.me.id ? `<button class="icon-btn" data-c-edit="${f.c.id}" aria-label="Editar">${icon('edit', 'sm')}</button>` : ''}<button class="icon-btn" data-c-del="${f.c.id}" aria-label="Excluir">${icon('trash', 'sm')}</button></span>` : ''}</div>
                 ${f.c.attachment_id ? `<button class="proof-ref ${f.c.resolved ? 'ok' : ''}" data-proof="${f.c.attachment_id}" data-focus-pin="${f.c.id}">${icon('pin', 'sm')}${f.c.resolved ? 'Resolvido · ' : ''}na peça ${esc(attachments.find((a) => a.id === f.c.attachment_id)?.filename || '')}</button>` : ''}
                 <div class="txt" data-c-body="${f.c.id}">${commentBody(f.c.body)}</div></div></div>`).join('')}
         </div>
         <div class="composer">
-          <textarea class="textarea" data-comment placeholder="Escreva um comentário… use @nome para mencionar">${esc(draft)}</textarea>
-          <div class="composer-actions"><span class="caption faint">Ctrl + Enter para enviar</span><button class="btn btn-primary btn-sm" data-t="send">Comentar</button></div>
+          <textarea class="textarea" data-comment aria-label="Novo comentário" placeholder="Escreva um comentário… use @nome para mencionar">${esc(draft)}</textarea>
+          <div class="composer-actions"><span class="caption faint"><span class="pointer-only">Ctrl + Enter para enviar</span></span><button class="btn btn-primary btn-sm" data-t="send">Comentar</button></div>
         </div>
       </aside>
     </div>`;
   autosize(modal.querySelector('.task-title'));
+  autosize(modal.querySelector('.desc'));
   const f = modal.querySelector('.feed');
   if (atBottom) f.scrollTop = f.scrollHeight;
   state.overlay.scrollTop = mainScroll;
+  if (!state.overlay.contains(document.activeElement)) modal.focus({ preventScroll: true });
 }
 
 function depRow(d, kind) {
@@ -452,7 +468,13 @@ function bind(overlay) {
     const del = e.target.closest('[data-check-del]');
     if (del) { await api('DELETE', `/api/checklist/${del.dataset.checkDel}`).catch(fail); return refreshTask(); }
     const att = e.target.closest('[data-att-del]');
-    if (att) { await api('DELETE', `/api/attachments/${att.dataset.attDel}`).catch(fail); return refreshTask(); }
+    if (att) {
+      const a = state.data.attachments.find((x) => x.id === att.dataset.attDel);
+      if (!a) return refreshTask();
+      if (!(await confirmDialog('Remover anexo?', `“${a.filename}” e as marcações de revisão dele serão apagados. Não dá para desfazer.`, { ok: 'Remover', danger: true }))) return;
+      await api('DELETE', `/api/attachments/${a.id}`).catch(fail);
+      return refreshTask();
+    }
     const cdel = e.target.closest('[data-c-del]');
     if (cdel) {
       const c = state.data.comments.find((x) => x.id === cdel.dataset.cDel);
@@ -501,7 +523,7 @@ function bind(overlay) {
     void t;
   });
 
-  overlay.addEventListener('input', (e) => { if (e.target.matches('.task-title')) autosize(e.target); });
+  overlay.addEventListener('input', (e) => { if (e.target.matches('.task-title, .desc')) autosize(e.target); });
   overlay.addEventListener('submit', async (e) => {
     if (!e.target.matches('[data-time-form]')) return;
     e.preventDefault();

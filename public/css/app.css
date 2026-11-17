@@ -160,7 +160,7 @@ svg.i.lg { width: 20px; height: 20px; }
 .page-narrow { max-width: 1100px; margin: 0 auto; padding: var(--spacing-40) var(--spacing-24) var(--spacing-72); }
 
 /* ---------- Avatares ---------- */
-.avatar { width: 24px; height: 24px; border-radius: 50%; display: inline-grid; place-content: center; font-size: 10px; font-weight: var(--font-weight-w530); color: var(--bg); flex: none; letter-spacing: 0; }
+.avatar { width: 24px; height: 24px; border-radius: 50%; display: inline-grid; place-content: center; font-size: 10px; font-weight: var(--font-weight-w530); color: var(--color-onyx-canvas); flex: none; letter-spacing: 0; }
 .avatar.md { width: 32px; height: 32px; font-size: 12px; }
 .avatar.lg { width: 56px; height: 56px; font-size: 18px; }
 .avatars { display: inline-flex; }
@@ -175,8 +175,9 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 .status-pill.lg { height: 32px; padding: 0 14px; font-size: 12px; }
 .prio { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-caption); color: var(--text-muted); white-space: nowrap; }
 .prio svg { color: var(--p); }
-.tag { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 10px; border-radius: var(--radius-tags); font-size: 11px; background: color-mix(in srgb, var(--c) 16%, transparent); color: color-mix(in srgb, var(--c) 60%, var(--text)); white-space: nowrap; }
-.tag button { color: inherit; opacity: .6; display: inline-flex; }
+.tag { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 10px; border-radius: var(--radius-tags); font-size: 11px; background: color-mix(in srgb, var(--c) 16%, transparent); color: color-mix(in srgb, var(--c) 50%, var(--text)); white-space: nowrap; }
+.tag button { color: inherit; opacity: .7; display: inline-flex; position: relative; border-radius: 50%; }
+.tag button::after { content: ''; position: absolute; inset: -7px; }
 .tag button:hover { opacity: 1; }
 .date { font-size: var(--text-caption); color: var(--text-muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
 .date.overdue { color: var(--danger); }
@@ -293,7 +294,7 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 .date-input { background: transparent; border: 0; color: var(--text-muted); font-size: var(--text-body-sm); color-scheme: inherit; padding: 4px 8px; margin-left: -8px; border-radius: var(--radius-tags); }
 .date-input:hover { background: var(--surface-2); }
 .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.desc { display: block; width: 100%; background: var(--bg); border: 1px solid var(--hairline-strong); border-radius: var(--radius-cards); padding: 16px 18px; min-height: 240px; max-height: 70vh; resize: vertical; line-height: 1.65; font-size: 15px; outline: none; color: var(--text); caret-color: var(--accent); transition: border-color 140ms var(--ease-out); }
+.desc { display: block; width: 100%; background: var(--bg); border: 1px solid var(--hairline-strong); border-radius: var(--radius-cards); padding: 16px 18px; min-height: 240px; resize: none; overflow: hidden; line-height: 1.65; font-size: 15px; outline: none; color: var(--text); caret-color: var(--accent); transition: border-color 140ms var(--ease-out); }
 .desc::placeholder { color: var(--text-faint); }
 .desc:hover { border-color: var(--border); }
 .desc:focus { border-color: var(--border-strong); }
@@ -303,7 +304,7 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 .check-item .txt { flex: 1; background: transparent; border: 0; outline: none; color: var(--text); padding: 4px 0; }
 .check-item.done .txt { color: var(--text-faint); text-decoration: line-through; }
 .check-item .icon-btn { opacity: 0; }
-.check-item:hover .icon-btn { opacity: 1; }
+.check-item:hover .icon-btn, .check-item:focus-within .icon-btn { opacity: 1; }
 .attachments { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .att { background: var(--bg); border-radius: var(--radius-lg); overflow: hidden; display: flex; flex-direction: column; position: relative; }
 .att .thumb { height: 96px; display: grid; place-content: center; background: var(--surface-2); color: var(--text-faint); }
@@ -311,7 +312,7 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 .att .meta { padding: 8px 10px; font-size: 11px; }
 .att .meta .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .att .del { position: absolute; top: 6px; right: 6px; background: color-mix(in srgb, var(--surface-1) 85%, transparent); opacity: 0; }
-.att:hover .del { opacity: 1; }
+.att:hover .del, .att:focus-within .del { opacity: 1; }
 .dropzone { display: block; border: 1px dashed var(--hairline-strong); border-radius: var(--radius-lg); padding: 18px; text-align: center; color: var(--text-faint); font-size: var(--text-caption); cursor: pointer; }
 .dropzone:hover, .dropzone.over { border-color: var(--border-strong); color: var(--text); }
 .task-side { border-left: 1px solid var(--hairline); display: flex; flex-direction: column; min-height: 0; background: color-mix(in srgb, var(--bg) 40%, var(--surface-1)); border-radius: 0 0 var(--radius-cards) 0; }
@@ -330,7 +331,7 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 .comment:hover .who .acts, .comment:focus-within .who .acts { opacity: 1; }
 @media (hover: none) { .comment .who .acts { opacity: 1; } }
 .comment .txt { white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
-.comment .mention { color: var(--accent-hover); }
+.comment .mention { color: color-mix(in srgb, var(--accent) 45%, var(--text)); font-weight: var(--font-weight-w480); }
 .composer { padding: 14px 20px 20px; border-top: 1px solid var(--hairline); }
 .composer .textarea { min-height: 72px; background: var(--bg); }
 .composer-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
@@ -430,7 +431,7 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 .time-entry { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--hairline); font-size: var(--text-caption); }
 .time-entry b { font-weight: var(--font-weight-w480); font-variant-numeric: tabular-nums; }
 .time-entry .icon-btn { opacity: 0; }
-.time-entry:hover .icon-btn { opacity: 1; }
+.time-entry:hover .icon-btn, .time-entry:focus-within .icon-btn { opacity: 1; }
 
 /* ---------- Seleção e ações em massa ---------- */
 .sel { appearance: none; width: 16px; height: 16px; margin: 0 -2px 0 -24px; border-radius: 4px; border: 1.5px solid var(--border); flex: none; cursor: pointer; opacity: 0; display: inline-grid; place-content: center; transition: opacity 120ms ease; }
@@ -596,7 +597,7 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 /* Toque: hover só em quem tem ponteiro fino; no celular, ações sempre visíveis */
 @media (hover: none) {
   .space-row .actions, .list-row .actions { display: flex; }
-  .cal-day .day-head .icon-btn, .check-item .icon-btn, .att .del { opacity: 1; }
+  .cal-day .day-head .icon-btn, .check-item .icon-btn, .att .del, .time-entry .icon-btn { opacity: 1; }
   .card:hover { border-color: transparent; }
 }
 
@@ -853,3 +854,37 @@ button.status-pill:hover { background: color-mix(in srgb, var(--c) 28%, transpar
 .tpl-pre { margin: 0; padding: 12px 14px; background: var(--bg); border: 1px solid var(--hairline); border-radius: var(--radius-lg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; color: var(--text-muted); white-space: pre-wrap; user-select: all; }
 .tpl-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .tpl-cfg .field { max-width: 360px; }
+
+/* ── Tela da tarefa: foco visível e leitura ── */
+.add-row input::placeholder, .check-item .txt::placeholder { color: var(--text-faint); opacity: 1; }
+.task-title:focus-visible, .check-item .txt:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 6px; }
+.add-row:focus-within { box-shadow: inset 0 0 0 2px var(--accent); border-radius: var(--radius-lg); color: var(--text); }
+.desc:focus-visible, .modal .textarea:focus-visible, .modal .input:focus-visible { border-color: var(--accent); }
+.modal:focus { outline: none; }
+.comment .acts .icon-btn { width: 26px; height: 26px; }
+@media (hover: none) { .comment .acts .icon-btn { width: 36px; height: 36px; } }
+
+/* A coluna de atividade acompanha a rolagem: o campo de comentário fica sempre à mão */
+@media (min-width: 1101px) {
+  .task-main { border-right: 1px solid var(--hairline); }
+  .task-side { position: sticky; top: 0; align-self: start; height: calc(96vh - 60px); border-left: 0; }
+  .task-side .feed { max-height: none; min-height: 0; }
+}
+@media (max-width: 1100px) {
+  .composer { position: sticky; bottom: 0; z-index: 2; background: var(--surface-1); padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+}
+.modal-head .crumbs { overflow: hidden; white-space: nowrap; }
+.modal-head .crumbs > span, .modal-head .crumbs > a { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+.modal-head .crumbs > svg { flex: none; }
+.touch-only { display: none; }
+@media (hover: none) {
+  .touch-only { display: inline; }
+  .pointer-only { display: none; }
+  /* No celular o botão de remover ocupa o canto: o selo de marcações vai para baixo */
+  .att .pin-count { top: auto; bottom: 6px; right: 6px; }
+  .att:hover .pin-count { opacity: 1; }
+}
+/* iPhone dá zoom na página ao focar campos com letra menor que 16px */
+@media (hover: none) and (max-width: 860px) {
+  .modal .desc, .modal .textarea, .modal .input, .modal .date-input, .check-item .txt, .add-row input { font-size: 16px; }
+}
