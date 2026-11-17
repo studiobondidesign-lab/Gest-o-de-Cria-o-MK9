@@ -214,13 +214,17 @@ export function pickTags(anchor, task, onDone) {
 }
 
 // ---------- roteamento ----------
+const ROUTE_NAMES = ['inicio', 'entrada', 'minhas', 'carga', 'membros', 'perfil', 'lista', 'espaco', 'pasta'];
+const VIEW_NAMES = ['lista', 'quadro', 'calendario', 'linha'];
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
   const [pathPart, query = ''] = raw.split('?');
   const parts = pathPart.split('/').filter(Boolean);
   const params = new URLSearchParams(query);
-  const name = parts[0] || 'inicio';
-  return { name, id: parts[1], view: parts[2] || store.get('view:' + parts[1], 'lista'), task: params.get('tarefa') };
+  // Endereço desconhecido cai no Início, e visão desconhecida cai na Lista, em vez de uma tela vazia
+  const name = ROUTE_NAMES.includes(parts[0]) ? parts[0] : 'inicio';
+  const saved = parts[2] || store.get('view:' + parts[1], 'lista');
+  return { name, id: parts[1], view: VIEW_NAMES.includes(saved) ? saved : 'lista', task: params.get('tarefa') };
 }
 export function go(hash) { location.hash = hash; }
 export function routeHash(r = S.route) {
