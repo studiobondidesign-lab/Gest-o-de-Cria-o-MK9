@@ -26,7 +26,14 @@ export async function openTask(id) {
     bind(overlay);
     document.addEventListener('keydown', onKey);
   }
-  state.id = id;
+  if (state.id !== id || !state.data) {
+    // Ao trocar de tarefa com o painel aberto, nada da tarefa anterior pode ficar clicável enquanto a nova carrega
+    const a = document.activeElement;
+    if (a && state.overlay.contains(a)) a.blur(); // salva o que estava sendo digitado, ainda na tarefa certa
+    state.id = id;
+    state.data = null;
+    state.overlay.querySelector('.modal').innerHTML = '<div class="loading">Carregando…</div>';
+  }
   await refreshTask();
 }
 
@@ -66,12 +73,12 @@ export async function refreshTask() {
 
 // Atualiza campos da tarefa aberta
 async function patch(p) {
-  const id = state.id;
+  const id = state.data?.task.id || state.id;
   try {
     await api('PATCH', `/api/tasks/${id}`, p);
     await refreshTask();
     const i = S.tasks.findIndex((t) => t.id === id);
-    if (i >= 0 && state?.data) { S.tasks[i] = state.data.task; renderContent(); }
+    if (i >= 0 && state?.data?.task.id === id) { S.tasks[i] = state.data.task; renderContent(); }
   } catch (e) {
     // Aviso ao concluir com subtarefas abertas ou dependências pendentes
     if (e.code === 'incomplete' && !p.force) {
@@ -179,7 +186,7 @@ function render() {
 
         <section>
           <div class="section-title"><h3 class="h-card">Descrição</h3></div>
-          <textarea class="desc" data-field="description" placeholder="Escreva o briefing, referências, formatos e observações…">${esc(t.description)}</textarea>
+          <textarea class="desc" aria-label="Descrição" data-field="description" placeholder="Escreva o briefing, referências, formatos e observações…">${esc(t.description)}</textarea>
         </section>
 
         ${!t.parent_id ? `<section class="subtasks">
@@ -447,7 +454,14 @@ function bind(overlay) {
     const att = e.target.closest('[data-att-del]');
     if (att) { await api('DELETE', `/api/attachments/${att.dataset.attDel}`).catch(fail); return refreshTask(); }
     const cdel = e.target.closest('[data-c-del]');
-    if (cdel) { await api('DELETE', `/api/comments/${cdel.dataset.cDel}`).catch(fail); return refreshTask(); }
+    if (cdel) {
+      const c = state.data.comments.find((x) => x.id === cdel.dataset.cDel);
+      if (!c || c.task_id !== t.id) return refreshTask();
+      const resumo = c.body.length > 90 ? c.body.slice(0, 90).trimEnd() + '…' : c.body;
+      if (!(await confirmDialog('Excluir comentário?', `“${resumo}” será apagado desta tarefa. Não dá para desfazer.`, { ok: 'Excluir', danger: true }))) return;
+      await api('DELETE', `/api/comments/${c.id}`).catch(fail);
+      return refreshTask();
+    }
     const cedit = e.target.closest('[data-c-edit]');
     if (cedit) {
       const id = cedit.dataset.cEdit;
